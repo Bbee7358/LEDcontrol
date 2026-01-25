@@ -1,5 +1,6 @@
-// app.js
-(() => {
+import { loadEffects } from "./fx/loader.js";
+
+(async () => {
   // =========================================================
   // 0) 基本設定
   // =========================================================
@@ -10,8 +11,7 @@
   const BAUD = 1000000;
 
   // m押下中 原点追従の「更新間隔」（秒）
-  // 0.00 にすると毎フレーム更新（重く＆時間依存FXが乱れやすい）
-  const ORIGIN_FOLLOW_INTERVAL_SEC = 0.08; // 80msくらいが気持ちいい
+  const ORIGIN_FOLLOW_INTERVAL_SEC = 0.08; // 80msくらい
 
   // =========================================================
   // 1) DOM
@@ -78,7 +78,7 @@
   const fxParams = document.getElementById("fxParams");
 
   // =========================================================
-  // 1.5) 入力の安全化（重要）
+  // 1.5) 入力の安全化
   // =========================================================
   function clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
   function isFiniteNumber(n){ return Number.isFinite(n); }
@@ -172,7 +172,7 @@
   }
 
   // =========================================================
-  // 5) Zoom（上限UP）
+  // 5) Zoom
   // =========================================================
   const ZOOM_MIN = 0.6;
   const ZOOM_MAX = 25.0;
@@ -282,8 +282,14 @@
   }
   rebuildWorld();
 
+  // geo（FXに渡す）
+  const GEO = {
+    worldX, worldY, worldB, worldI,
+    TOTAL, FRAME_LEN, BOARDS, LEDS_PER_BOARD
+  };
+
   // =========================================================
-  // 7) 原点（x,y）管理（個別入力コミット）
+  // 7) 原点（x,y）管理
   // =========================================================
   const origin = { x: 0, y: 0 };
 
@@ -341,11 +347,9 @@
   function setFollowMode(on){
     followOriginWithMouse = on;
     mInfo.textContent = `m: ${on ? "on" : "off"}`;
-    // 押した瞬間にも一度更新（体感良く）
     if (on) {
       lastFollowUpdateT = 0;
       setOriginAtWorld(lastMouseMm.x, lastMouseMm.y, { altKey: false });
-      // ★押した瞬間にも1レイヤー生成（最初の軌跡を残す）
       Effects.spawnLayerFromCurrent(performance.now()/1000);
     }
   }
@@ -353,11 +357,9 @@
   window.addEventListener("keydown", (e) => {
     if (e.repeat) return;
     if (e.key === "m" || e.key === "M") {
-      // 入力欄にフォーカス中は邪魔しない
       const tag = (document.activeElement && document.activeElement.tagName) ? document.activeElement.tagName.toLowerCase() : "";
       const isTyping = (tag === "input" || tag === "textarea" || tag === "select");
       if (isTyping) return;
-
       setFollowMode(true);
     }
   });
@@ -410,7 +412,6 @@
   setStatus("idle", "fps: --  seq: ----");
   mInfo.textContent = "m: off";
 
-  // ===== コントロール反映 =====
   function clamp255(v){ return v < 0 ? 0 : v > 255 ? 255 : (v|0); }
 
   // gamma LUT（0..255）
@@ -489,252 +490,30 @@
   });
 
   // =========================================================
+  // 13) FXをプラグインとしてロード
+  // =========================================================
+  const FX_REGISTRY = await loadEffects();
+  const FX_ORDER = Object.keys(FX_REGISTRY);
+
+  if (FX_ORDER.length === 0) {
+    alert("FXがロードできませんでした。fx/manifest.json か fx/*.js を確認してください。");
+  }
+
+  // =========================================================
   // 13) Effects（単一FX + Layer合成）
   // =========================================================
   const Effects = (() => {
-
     function clamp255(v){ return v < 0 ? 0 : v > 255 ? 255 : (v|0); }
-
-    // ★ ctxObj の originX/originY を使う（グローバルorigin参照をやめる）
-    function relX(ctx, gi){ return worldX[gi] - ctx.originX; }
-    function relY(ctx, gi){ return worldY[gi] - ctx.originY; }
-    function relR(ctx, gi){ const x = relX(ctx, gi), y = relY(ctx, gi); return Math.hypot(x,y); }
-
-    function addRGB(out, gi, r, g, b) {
-      const k = gi*3;
-      out[k+0] = clamp255(out[k+0] + r);
-      out[k+1] = clamp255(out[k+1] + g);
-      out[k+2] = clamp255(out[k+2] + b);
-    }
-    function setRGB(out, gi, r, g, b) {
-      const k = gi*3;
-      out[k+0] = r; out[k+1] = g; out[k+2] = b;
-    }
-
-    const FX_REGISTRY = {
-      red20: {
-        label: "Base: Red20",
-        desc: "全LEDを赤20で点灯",
-        params: [],
-        init(state, params){},
-        render(ctx, out, state, params) {
-          for (let gi = 0; gi < TOTAL; gi++) setRGB(out, gi, 20, 0, 0);
-        }
-      },
-
-      originGlow: {
-        label: "Origin Glow",
-        desc: "原点周辺が光る（単体で完成）",
-        params: [
-          { key:"baseR", label:"Base R", type:"range", min:0, max:50, step:1, default:20 },
-          { key:"radius", label:"Radius(mm)", type:"range", min:10, max:200, step:1, default:55 },
-          { key:"glow", label:"Glow", type:"range", min:0, max:255, step:1, default:140 },
-        ],
-        init(state, params){},
-        render(ctx, out, state, params) {
-          for (let gi = 0; gi < TOTAL; gi++) setRGB(out, gi, params.baseR, 0, 0);
-
-          const radius = params.radius;
-          const inv = 1 / Math.max(1e-6, radius);
-
-          for (let gi = 0; gi < TOTAL; gi++) {
-            const d = relR(ctx, gi);
-            if (d > radius) continue;
-            const a = 1 - (d * inv);
-            addRGB(out, gi, 30*a, 40*a, params.glow*a);
-          }
-        }
-      },
-
-      bandFlowX: {
-        label: "Band Flow X",
-        desc: "X方向の帯が流れる（単体）",
-        params: [
-          { key:"baseR", label:"Base R", type:"range", min:0, max:50, step:1, default:20 },
-          { key:"speed", label:"Speed(mm/s)", type:"range", min:0, max:600, step:1, default:240 },
-          { key:"sigma", label:"Sigma(mm)", type:"range", min:5, max:120, step:1, default:35 },
-          { key:"span",  label:"Span(mm)", type:"range", min:50, max:2000, step:10, default:520 },
-        ],
-        init(state, params){},
-        render(ctx, out, state, params) {
-          for (let gi = 0; gi < TOTAL; gi++) setRGB(out, gi, params.baseR, 0, 0);
-
-          const t = ctx.t;
-          const speed = params.speed;
-          const sigma = Math.max(1e-6, params.sigma);
-          const span  = Math.max(1e-6, params.span);
-          const head = (-span*0.5) + ((t * speed) % span);
-
-          for (let gi = 0; gi < TOTAL; gi++) {
-            const dx = (worldX[gi] - ctx.originX) - head;
-            const a = Math.exp(-(dx*dx)/(2*sigma*sigma));
-            if (a < 0.01) continue;
-            addRGB(out, gi, 80*a, 30*a, 160*a);
-          }
-        }
-      },
-
-      ripple: {
-        label: "Ripple",
-        desc: "原点から波紋（単体）",
-        params: [
-          { key:"baseR",  label:"Base R", type:"range", min:0, max:50, step:1, default:20 },
-          { key:"speed",  label:"Speed(mm/s)", type:"range", min:10, max:600, step:1, default:190 },
-          { key:"period", label:"Period(s)", type:"range", min:0.2, max:3.0, step:0.05, default:1.10 },
-          { key:"width",  label:"Width(s)", type:"range", min:0.01, max:0.40, step:0.01, default:0.095 },
-        ],
-        init(state, params){},
-        render(ctx, out, state, params) {
-          for (let gi = 0; gi < TOTAL; gi++) setRGB(out, gi, params.baseR, 0, 0);
-
-          const t = ctx.t;
-          const speed  = Math.max(1e-6, params.speed);
-          const period = Math.max(1e-6, params.period);
-          const width  = Math.max(1e-6, params.width);
-
-          for (let gi = 0; gi < TOTAL; gi++) {
-            const r = relR(ctx, gi);
-            const phase = (r / speed) - t;
-            const p = ((phase % period) + period) % period;
-            const d = Math.min(p, period - p);
-            const a = Math.exp(-(d*d)/(2*width*width));
-            if (a < 0.02) continue;
-            addRGB(out, gi, 50*a, 90*a, 180*a);
-          }
-        }
-      },
-
-      orbitPulse: {
-        label: "Orbit Pulse",
-        desc: "原点周りを回る点（単体）",
-        params: [
-          { key:"baseR", label:"Base R", type:"range", min:0, max:50, step:1, default:20 },
-          { key:"R",     label:"Radius(mm)", type:"range", min:0, max:400, step:1, default:140 },
-          { key:"w",     label:"Angular(rad/s)", type:"range", min:0, max:6, step:0.05, default:1.2 },
-          { key:"sigma", label:"Sigma(mm)", type:"range", min:5, max:120, step:1, default:28 },
-        ],
-        init(state, params){},
-        render(ctx, out, state, params) {
-          for (let gi = 0; gi < TOTAL; gi++) setRGB(out, gi, params.baseR, 0, 0);
-
-          const t = ctx.t;
-          const R = params.R;
-          const w = params.w;
-          const px = Math.cos(t*w) * R;
-          const py = Math.sin(t*w) * R;
-          const sigma = Math.max(1e-6, params.sigma);
-
-          for (let gi = 0; gi < TOTAL; gi++) {
-            const dx = relX(ctx, gi) - px;
-            const dy = relY(ctx, gi) - py;
-            const a = Math.exp(-(dx*dx+dy*dy)/(2*sigma*sigma));
-            if (a < 0.01) continue;
-            addRGB(out, gi, 40*a, 160*a, 120*a);
-          }
-        }
-      },
-
-      sweepLine: {
-        label: "Sweep Line",
-        desc: "回転するライン（単体）",
-        params: [
-          { key:"baseR", label:"Base R", type:"range", min:0, max:50, step:1, default:20 },
-          { key:"angW",  label:"Angular(rad/s)", type:"range", min:0, max:4, step:0.05, default:0.85 },
-          { key:"thick", label:"Thickness(mm)", type:"range", min:3, max:80, step:1, default:18 },
-        ],
-        init(state, params){},
-        render(ctx, out, state, params) {
-          for (let gi = 0; gi < TOTAL; gi++) setRGB(out, gi, params.baseR, 0, 0);
-
-          const t = ctx.t;
-          const ang = t * params.angW;
-          const nx = Math.cos(ang);
-          const ny = Math.sin(ang);
-          const thickness = Math.max(1e-6, params.thick);
-
-          for (let gi = 0; gi < TOTAL; gi++) {
-            const x = relX(ctx, gi), y = relY(ctx, gi);
-            const d = Math.abs(-ny*x + nx*y);
-            const a = Math.exp(-(d*d)/(2*thickness*thickness));
-            if (a < 0.01) continue;
-
-            const c = 0.5 + 0.5*Math.sin(t*2.0);
-            addRGB(out, gi, 120*a, (40+120*c)*a, 200*a);
-          }
-        }
-      },
-
-      boardHop: {
-        label: "Board Hop",
-        desc: "基板単位で巡回（単体）",
-        params: [
-          { key:"baseR",  label:"Base R", type:"range", min:0, max:50, step:1, default:20 },
-          { key:"period", label:"Period(s/board)", type:"range", min:0.2, max:2.0, step:0.05, default:0.85 },
-        ],
-        init(state, params){},
-        render(ctx, out, state, params) {
-          for (let gi = 0; gi < TOTAL; gi++) setRGB(out, gi, params.baseR, 0, 0);
-
-          const t = ctx.t;
-          const period = Math.max(1e-6, params.period);
-          const idx = Math.floor(t / period) % BOARDS;
-
-          for (let gi = 0; gi < TOTAL; gi++) {
-            if (worldB[gi] !== idx) continue;
-            const i = worldI[gi];
-            const a = 0.25 + 0.75*(0.5 + 0.5*Math.sin((t*6.0) + i*0.25));
-            addRGB(out, gi, 40*a, 180*a, 80*a);
-          }
-        }
-      },
-
-      sparkle: {
-        label: "Sparkle",
-        desc: "ランダムきらめき（状態あり・単体）",
-        params: [
-          { key:"baseR",  label:"Base R", type:"range", min:0, max:50, step:1, default:20 },
-          { key:"rate",   label:"Rate(/s)", type:"range", min:0, max:120, step:1, default:18 },
-          { key:"decay",  label:"Decay", type:"range", min:0.5, max:20, step:0.1, default:6.0 },
-        ],
-        init(state, params) {
-          state.spark = new Float32Array(TOTAL);
-        },
-        render(ctx, out, state, params) {
-          for (let gi = 0; gi < TOTAL; gi++) setRGB(out, gi, params.baseR, 0, 0);
-
-          const dt = Math.max(0, Math.min(0.05, ctx.dt || 0.016));
-          const decayMul = Math.exp(-dt * params.decay);
-
-          if (!state.spark) state.spark = new Float32Array(TOTAL);
-
-          for (let gi = 0; gi < TOTAL; gi++) state.spark[gi] *= decayMul;
-
-          const spawns = Math.max(0, Math.floor(params.rate * (dt || 0.016)));
-          for (let k = 0; k < spawns; k++) {
-            const gi = (Math.random() * TOTAL) | 0;
-            state.spark[gi] = Math.min(1, state.spark[gi] + 0.9);
-          }
-
-          for (let gi = 0; gi < TOTAL; gi++) {
-            const a = state.spark[gi];
-            if (a < 0.02) continue;
-            addRGB(out, gi, 180*a, 220*a, 255*a);
-          }
-        }
-      },
-    };
-
-    const FX_ORDER = Object.keys(FX_REGISTRY);
 
     function buildDefaultParams(fxId) {
       const fx = FX_REGISTRY[fxId];
       const obj = {};
-      for (const p of (fx.params || [])) obj[p.key] = p.default;
+      for (const p of (fx?.params || [])) obj[p.key] = p.default;
       return obj;
     }
 
     // Base（UI選択中のFX）
-    let activeId = FX_ORDER[0];
+    let activeId = FX_ORDER[0] || "red20";
     let activeParams = buildDefaultParams(activeId);
     let baseState = {};
     let baseLastT = 0;
@@ -760,7 +539,6 @@
     const layers = [];
     const tmpLayer = new Uint8Array(FRAME_LEN);
 
-    // 調整パラメータ
     const LAYER_MAX = 24;
     const LIFE_SEC = 1.6;
     const FADEOUT_SEC = 0.7;
@@ -770,9 +548,7 @@
       const id = activeId;
       const params = { ...activeParams };
 
-      // ★重要：レイヤーは“差分”だけ欲しい。
-      // 各FXは最初に baseR で全体塗りしているため、そのままレイヤーにすると
-      // baseR が積み上がって飽和する。ここで baseR だけ0に落として積み上がりを止める。
+      // baseRの積み上がり防止
       if ("baseR" in params) params.baseR = 0;
 
       const st = {};
@@ -816,7 +592,7 @@
       const baseCtx = { t: nowSec, dt: baseDt, originX: origin.x, originY: origin.y };
       outRGB.fill(0);
       const baseFx = FX_REGISTRY[activeId];
-      if (baseFx) baseFx.render(baseCtx, outRGB, baseState, activeParams);
+      if (baseFx) baseFx.render(baseCtx, outRGB, baseState, activeParams, GEO);
 
       // レイヤー合成（固定origin）
       for (let idx = layers.length - 1; idx >= 0; idx--) {
@@ -832,7 +608,7 @@
 
         tmpLayer.fill(0);
         const fx = FX_REGISTRY[L.id];
-        if (fx) fx.render(ctxObj, tmpLayer, L.state, L.params);
+        if (fx) fx.render(ctxObj, tmpLayer, L.state, L.params, GEO);
 
         mixLayerInto(outRGB, tmpLayer, a);
       }
@@ -840,10 +616,7 @@
       return outRGB;
     }
 
-    function onOriginChanged() {
-      // 今回はstate維持（必要ならここで何かする）
-    }
-
+    function onOriginChanged() {}
     function getRegistry(){ return FX_REGISTRY; }
     function getOrder(){ return FX_ORDER.slice(); }
     function getActiveId(){ return activeId; }
@@ -862,14 +635,12 @@
       getActiveId,
       getActiveParams,
       onOriginChanged,
-
-      // ★追加
       spawnLayerFromCurrent,
     };
   })();
 
   // =========================================================
-  // 13.5) FX UI（単一FX）
+  // 13.5) FX UI
   // =========================================================
   function buildFxUI() {
     fxSelect.innerHTML = "";
@@ -1306,7 +1077,7 @@
   }
 
   // =========================================================
-  // 16) 描画（見た目）
+  // 16) 描画
   // =========================================================
   function drawBackground() {
     const w = window.innerWidth, h = window.innerHeight;
@@ -1509,18 +1280,14 @@
   btnStart.addEventListener("click", start);
   btnStop.addEventListener("click", stop);
 
-  // m追従は「一定間隔で origin を更新」する（座標が動いた瞬間に発火しない）
   function maybeUpdateOriginFollow(tNowSec) {
     if (!followOriginWithMouse) return;
     const dt = tNowSec - lastFollowUpdateT;
     if (dt < ORIGIN_FOLLOW_INTERVAL_SEC) return;
 
     lastFollowUpdateT = tNowSec;
-
-    // スナップ設定はUIのものを尊重（Altは“このモードでは無し”扱い）
     setOriginAtWorld(lastMouseMm.x, lastMouseMm.y, { altKey: false });
 
-    // ★追加：原点が更新された瞬間の“固定原点レイヤー”を生成
     Effects.spawnLayerFromCurrent(tNowSec);
   }
 
