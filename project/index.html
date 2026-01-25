@@ -1,0 +1,269 @@
+<!-- index.html -->
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>LED Layout Studio — 480 LEDs (WebSerial + JSON Layout)</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <div id="topbar">
+    <div class="brand">
+      <div class="dot"></div>
+      <div class="title">
+        <div class="h">LED Layout Studio</div>
+        <div class="s">480 LEDs / 10 boards / WebSerial → Pico (GP0:240, GP1:240)</div>
+      </div>
+    </div>
+
+    <div class="status" title="接続・送信状態">
+      <div class="pill" id="pill"></div>
+      <div class="t">
+        <div id="statusLine" class="mono">idle</div>
+        <div id="statusSub" class="mono">fps: --  seq: ----</div>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button id="btnConnect" class="primary">Connect</button>
+      <button id="btnDisconnect" class="danger" disabled>Disconnect</button>
+      <button id="btnStart" class="good" disabled>Start</button>
+      <button id="btnStop" disabled>Stop</button>
+
+      <button id="btnZoomOut">Zoom −</button>
+      <button id="btnZoomIn">Zoom ＋</button>
+      <button id="btnZoomReset">Reset Zoom</button>
+
+      <button id="btnCenter">Center View</button>
+    </div>
+  </div>
+
+  <div id="panel">
+    <div class="section">
+      <div class="head">
+        <div class="h">操作</div>
+        <div class="hint">レイアウト編集</div>
+      </div>
+      <div class="mini">
+        <span class="kbd"><b>ドラッグ</b> 移動</span>
+        <span class="kbd"><b>Shift</b>+ドラッグ 回転</span>
+        <span class="kbd"><b>Alt</b> 押しながら スナップ無効</span>
+        <span class="kbd"><b>Del</b> 選択基板を初期化</span>
+        <span class="kbd"><b>ホイール</b> 拡大縮小</span>
+        <span class="kbd"><b>Ctrl</b>+クリック 原点(x,y)設定</span>
+        <span class="kbd"><b>m</b> 押下中 原点=マウス（一定間隔で更新）</span>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="head">
+        <div class="h">送信</div>
+        <div class="hint">PCが全計算→Picoは出力のみ</div>
+      </div>
+
+      <div class="row">
+        <label>FPS</label>
+        <div class="ctl">
+          <input id="fps" type="range" min="10" max="60" value="30" />
+          <span class="mono" id="fpsVal">30</span>
+        </div>
+      </div>
+
+      <div class="row">
+        <label>明るさ（全体）</label>
+        <div class="ctl">
+          <input id="gain" type="range" min="0" max="1" step="0.01" value="1" />
+          <span class="mono" id="gainVal">1.00</span>
+        </div>
+      </div>
+
+      <div class="row">
+        <label>ガンマ</label>
+        <div class="ctl">
+          <input id="gamma" type="range" min="1.0" max="3.0" step="0.05" value="2.2" />
+          <span class="mono" id="gammaVal">2.20</span>
+        </div>
+      </div>
+
+      <div class="mini">
+        送信が詰まった場合は遅延を溜めずにフレームをスキップし、リアルタイム性を優先します。
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="head">
+        <div class="h">原点（x,y）</div>
+        <div class="hint">この座標を基準にエフェクト</div>
+      </div>
+
+      <div class="grid">
+        <div>
+          <label>origin X（mm）</label>
+          <input id="originX" type="number" value="0" step="1" />
+        </div>
+        <div>
+          <label>origin Y（mm）</label>
+          <input id="originY" type="number" value="0" step="1" />
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:10px;">
+        <div class="toggle">
+          <input id="showOrigin" type="checkbox" checked />
+          <label for="showOrigin" style="cursor:pointer;">原点マーカー表示</label>
+        </div>
+        <div class="toggle">
+          <input id="originSnap" type="checkbox" checked />
+          <label for="originSnap" style="cursor:pointer;">原点もスナップ</label>
+        </div>
+      </div>
+
+      <div class="split" style="margin-top:10px;">
+        <button id="btnOriginToSelected">Origin = 選択board中心</button>
+        <button id="btnOriginZero">Origin = (0,0)</button>
+      </div>
+
+      <div class="mini">
+        原点は「ワールド(mm)座標」です。<br/>
+        m押下中は原点がマウス追従しますが、更新は「一定間隔」でサンプルして行います（波などの時間依存FXが破綻しにくい）。
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="head">
+        <div class="h">スナップ・表示</div>
+        <div class="hint">整列・見た目</div>
+      </div>
+
+      <div class="grid">
+        <div>
+          <label>スナップ間隔（mm）</label>
+          <input id="snapMm" type="number" value="10" min="1" max="200" />
+        </div>
+        <div>
+          <label>表示スケール（mm→px）</label>
+          <input id="mm2px" type="number" value="2.2" step="0.1" min="0.6" max="25" />
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:10px;">
+        <div class="toggle">
+          <input id="snapOn" type="checkbox" checked />
+          <label for="snapOn" style="cursor:pointer;">スナップON</label>
+        </div>
+        <div class="toggle">
+          <input id="showRings" type="checkbox" checked />
+          <label for="showRings" style="cursor:pointer;">リング表示</label>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="toggle">
+          <input id="showIndex" type="checkbox" />
+          <label for="showIndex" style="cursor:pointer;">index表示（重い）</label>
+        </div>
+        <div class="toggle">
+          <input id="showGrid" type="checkbox" checked />
+          <label for="showGrid" style="cursor:pointer;">グリッド表示</label>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="head">
+        <div class="h">選択基板</div>
+        <div class="hint">board 0〜9</div>
+      </div>
+
+      <div class="grid">
+        <div>
+          <label>board</label>
+          <select id="selBoard"></select>
+        </div>
+        <div>
+          <label>回転（deg）</label>
+          <input id="rotDeg" type="number" value="0" step="1" />
+        </div>
+        <div>
+          <label>X（mm）</label>
+          <input id="posX" type="number" value="0" step="1" />
+        </div>
+        <div>
+          <label>Y（mm）</label>
+          <input id="posY" type="number" value="0" step="1" />
+        </div>
+      </div>
+
+      <div class="split" style="margin-top:10px;">
+        <button id="btnResetBoard">Reset Board</button>
+        <button id="btnResetAll">Reset All</button>
+      </div>
+      <div class="mini">
+        現場の実配置はここで座標・回転を合わせ、JSONとして保存して使い回します。
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="head">
+        <div class="h">エフェクト</div>
+        <div class="hint">常に1つだけ選択して編集</div>
+      </div>
+
+      <div class="grid">
+        <div style="grid-column: 1 / -1;">
+          <label>エフェクト選択</label>
+          <select id="fxSelect"></select>
+        </div>
+      </div>
+
+      <div class="split" style="margin-top:10px;">
+        <button id="btnFxResetParams">Reset Params</button>
+        <button id="btnFxResetState">Reset State</button>
+      </div>
+
+      <div id="fxParams" class="fxlist"></div>
+
+      <div class="mini">
+        エフェクトは「単体で完成」した1本の関数です。<br/>
+        追加する場合はJS内の <span class="mono">FX_REGISTRY</span> に1つ追加するだけで、選択肢とパラメータUIが自動で増えます。
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="head">
+        <div class="h">JSON（配置の保存/読込）</div>
+        <div class="hint">Webだけで完結</div>
+      </div>
+
+      <div class="split">
+        <button id="btnExport">Export JSON</button>
+        <button id="btnCopy">Copy JSON</button>
+        <button id="btnImport">Import JSON</button>
+      </div>
+      <input id="fileInput" type="file" accept="application/json" style="display:none;" />
+      <div class="mini">
+        JSONには boardごとの cx, cy, rotDeg に加え、origin と fx（選択中FX/params）も入ります。
+      </div>
+    </div>
+  </div>
+
+  <div id="hintbar">
+    <div class="left">
+      <span class="mono" id="selInfo">selected: board 0</span>
+      <span class="mono" id="originInfo">origin: (0,0) mm</span>
+      <span class="mono" id="mInfo">m: off</span>
+      <span class="mono">protocol: "NP" + len(u16LE) + seq(u16LE) + payload</span>
+      <span class="mono">payload: RGB * 480</span>
+    </div>
+    <div class="right">
+      <span class="mono" id="mouseInfo">x: -- mm / y: -- mm</span>
+      <span class="mono" id="dropInfo">drops: 0</span>
+    </div>
+  </div>
+
+  <canvas id="c"></canvas>
+
+  <script src="./app.js"></script>
+</body>
+</html>
