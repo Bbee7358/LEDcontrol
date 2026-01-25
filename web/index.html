@@ -3,32 +3,463 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>WebSerial LED Sim (48) -> Pico</title>
+  <title>LED Layout Studio — 480 LEDs (WebSerial + JSON Layout)</title>
   <style>
-    html, body { margin:0; height:100%; background:#0b0f14; color:#e8eef7; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-    #ui { position: fixed; top: 12px; left: 12px; z-index: 10; display:flex; gap:10px; align-items:center; flex-wrap: wrap;
-      background: rgba(20, 28, 40, 0.92); border: 1px solid rgba(255,255,255,0.10); border-radius: 12px; padding: 12px; }
-    button { padding:10px 14px; border-radius:10px; border:1px solid rgba(255,255,255,0.16); background: rgba(255,255,255,0.06); color:#e8eef7; cursor:pointer; }
-    button:disabled { opacity:.45; cursor:not-allowed; }
-    #status { font-size: 13px; opacity:.9; }
+    :root{
+      --bg:#070a10;
+      --panel: rgba(18, 26, 40, .74);
+      --stroke: rgba(255,255,255,.10);
+      --stroke2: rgba(255,255,255,.14);
+      --text:#e9effa;
+      --muted:rgba(233,239,250,.72);
+      --muted2:rgba(233,239,250,.52);
+      --accent:#7dd3fc;
+      --accent2:#a78bfa;
+      --good:#34d399;
+      --bad:#fb7185;
+      --shadow: 0 18px 60px rgba(0,0,0,.45);
+    }
+    *{ box-sizing: border-box; }
+    html, body {
+      margin:0; height:100%;
+      background:
+        radial-gradient(1200px 800px at 60% 10%, rgba(125,211,252,.10), transparent 60%),
+        radial-gradient(1200px 800px at 10% 40%, rgba(167,139,250,.08), transparent 60%),
+        var(--bg);
+      color: var(--text);
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans JP", sans-serif;
+      overflow:hidden;
+    }
     canvas { display:block; width:100vw; height:100vh; }
+
+    /* Top bar */
+    #topbar{
+      position: fixed; left: 14px; right: 14px; top: 14px;
+      display:flex; align-items:center; justify-content:space-between; gap: 12px;
+      padding: 12px 14px;
+      background: linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,.04));
+      border: 1px solid var(--stroke);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(10px);
+      z-index: 20;
+    }
+    .brand{ display:flex; gap: 10px; align-items:center; min-width: 240px; }
+    .dot{
+      width: 12px; height: 12px; border-radius: 999px;
+      background:
+        radial-gradient(circle at 30% 30%, #fff, rgba(255,255,255,.2) 45%, rgba(255,255,255,0) 70%),
+        linear-gradient(135deg, var(--accent), var(--accent2));
+      box-shadow: 0 0 0 2px rgba(255,255,255,.08), 0 12px 30px rgba(125,211,252,.12);
+    }
+    .title{ line-height: 1.1; }
+    .title .h{ font-weight: 720; letter-spacing: .2px; font-size: 14px; }
+    .title .s{ font-size: 12px; color: var(--muted2); }
+
+    .actions{ display:flex; gap: 8px; align-items:center; flex-wrap: wrap; justify-content:flex-end; }
+    button, input[type="range"], input[type="number"], select{
+      font: inherit;
+    }
+    button{
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--stroke2);
+      background: rgba(255,255,255,.06);
+      color: var(--text);
+      cursor: pointer;
+      transition: transform .08s ease, background .2s ease, border-color .2s ease;
+      user-select: none;
+      white-space: nowrap;
+    }
+    button:hover{ background: rgba(255,255,255,.08); border-color: rgba(255,255,255,.20); }
+    button:active{ transform: translateY(1px); }
+    button:disabled{ opacity:.45; cursor:not-allowed; }
+    .primary{
+      background: linear-gradient(135deg, rgba(125,211,252,.22), rgba(167,139,250,.18));
+      border-color: rgba(125,211,252,.28);
+    }
+    .danger{
+      background: rgba(251,113,133,.12);
+      border-color: rgba(251,113,133,.25);
+    }
+    .good{
+      background: rgba(52,211,153,.10);
+      border-color: rgba(52,211,153,.22);
+    }
+
+    .status{
+      display:flex; gap: 10px; align-items:center;
+      padding: 8px 10px;
+      border-radius: 12px;
+      border: 1px solid var(--stroke);
+      background: rgba(0,0,0,.16);
+      min-width: 220px;
+    }
+    .pill{
+      width: 10px; height: 10px; border-radius: 999px; background: rgba(255,255,255,.25);
+      box-shadow: 0 0 0 2px rgba(255,255,255,.06);
+    }
+    .status .t{
+      font-size: 12px; color: var(--muted);
+      display:flex; flex-direction:column; gap:2px;
+    }
+    .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+
+    /* Side panel */
+    #panel{
+      position: fixed;
+      top: 86px; left: 14px;
+      width: 360px;
+      max-height: calc(100vh - 100px);
+      overflow: auto;
+      padding: 14px;
+      border-radius: 18px;
+      border: 1px solid var(--stroke);
+      background: var(--panel);
+      backdrop-filter: blur(12px);
+      box-shadow: var(--shadow);
+      z-index: 15;
+    }
+    #panel::-webkit-scrollbar{ width: 10px; }
+    #panel::-webkit-scrollbar-thumb{ background: rgba(255,255,255,.10); border-radius: 999px; }
+    .section{
+      padding: 12px;
+      border-radius: 14px;
+      border: 1px solid rgba(255,255,255,.08);
+      background: rgba(0,0,0,.14);
+      margin-bottom: 10px;
+    }
+    .section .head{
+      display:flex; align-items:center; justify-content:space-between;
+      margin-bottom: 10px;
+    }
+    .section .head .h{
+      font-size: 12px; font-weight: 720; letter-spacing: .25px;
+      color: rgba(233,239,250,.92);
+    }
+    .section .head .hint{ font-size: 11px; color: var(--muted2); }
+    .grid{
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .row{ display:flex; gap: 10px; align-items:center; justify-content:space-between; }
+    label{ font-size: 12px; color: var(--muted); }
+    .ctl{
+      width: 160px;
+      display:flex; align-items:center; gap: 8px;
+    }
+    input[type="range"]{ width: 100%; }
+    input[type="number"], select{
+      width: 100%;
+      padding: 9px 10px;
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,.14);
+      background: rgba(255,255,255,.06);
+      color: var(--text);
+      outline: none;
+    }
+    .mini{
+      font-size: 11px;
+      color: var(--muted2);
+      margin-top: 6px;
+      line-height: 1.35;
+    }
+
+    .kbd{
+      display:inline-flex; align-items:center; gap:6px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,.12);
+      background: rgba(255,255,255,.05);
+      font-size: 11px;
+      color: var(--muted);
+      margin: 3px 4px 0 0;
+    }
+    .kbd b{
+      font-weight: 800; color: rgba(233,239,250,.92);
+      padding: 2px 6px; border-radius: 8px;
+      border: 1px solid rgba(255,255,255,.12);
+      background: rgba(0,0,0,.20);
+    }
+
+    .split{ display:flex; gap: 10px; flex-wrap: wrap; }
+    .split button{ flex: 1; min-width: 140px; }
+
+    /* Bottom hint */
+    #hintbar{
+      position: fixed; left: 14px; right: 14px; bottom: 14px;
+      padding: 10px 12px;
+      border-radius: 16px;
+      border: 1px solid rgba(255,255,255,.08);
+      background: rgba(0,0,0,.22);
+      backdrop-filter: blur(10px);
+      z-index: 12;
+      display:flex; gap: 10px; align-items:center; justify-content:space-between;
+    }
+    #hintbar .left{
+      display:flex; gap: 10px; align-items:center; flex-wrap: wrap;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    #hintbar .right{
+      font-size: 12px; color: var(--muted2);
+      display:flex; gap: 10px; align-items:center;
+    }
+    .toggle{
+      display:inline-flex; align-items:center; gap: 8px;
+      padding: 8px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,.12);
+      background: rgba(255,255,255,.05);
+      cursor: pointer;
+      user-select:none;
+    }
+    .toggle input{ accent-color: var(--accent); }
   </style>
 </head>
 <body>
-  <div id="ui">
-    <button id="btnConnect">Connect</button>
-    <button id="btnDisconnect" disabled>Disconnect</button>
-    <button id="btnStart" disabled>Start</button>
-    <button id="btnStop" disabled>Stop</button>
-    <span id="status">idle</span>
+  <div id="topbar">
+    <div class="brand">
+      <div class="dot"></div>
+      <div class="title">
+        <div class="h">LED Layout Studio</div>
+        <div class="s">480 LEDs / 10 boards / WebSerial → Pico (GP0:240, GP1:240)</div>
+      </div>
+    </div>
+
+    <div class="status" title="接続・送信状態">
+      <div class="pill" id="pill"></div>
+      <div class="t">
+        <div id="statusLine" class="mono">idle</div>
+        <div id="statusSub" class="mono">fps: --  seq: ----</div>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button id="btnConnect" class="primary">Connect</button>
+      <button id="btnDisconnect" class="danger" disabled>Disconnect</button>
+      <button id="btnStart" class="good" disabled>Start</button>
+      <button id="btnStop" disabled>Stop</button>
+
+      <button id="btnZoomOut">Zoom −</button>
+      <button id="btnZoomIn">Zoom ＋</button>
+      <button id="btnZoomReset">Reset Zoom</button>
+
+      <button id="btnCenter">Center View</button>
+    </div>
   </div>
+
+  <div id="panel">
+    <div class="section">
+      <div class="head">
+        <div class="h">操作</div>
+        <div class="hint">レイアウト編集</div>
+      </div>
+      <div class="mini">
+        <span class="kbd"><b>ドラッグ</b> 移動</span>
+        <span class="kbd"><b>Shift</b>+ドラッグ 回転</span>
+        <span class="kbd"><b>Alt</b> 押しながら スナップ無効</span>
+        <span class="kbd"><b>Del</b> 選択基板を初期化</span>
+        <span class="kbd"><b>ホイール</b> 拡大縮小</span>
+        <span class="kbd"><b>Ctrl</b>+クリック 原点(x,y)設定</span>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="head">
+        <div class="h">送信</div>
+        <div class="hint">PCが全計算→Picoは出力のみ</div>
+      </div>
+
+      <div class="row">
+        <label>FPS</label>
+        <div class="ctl">
+          <input id="fps" type="range" min="10" max="60" value="30" />
+          <span class="mono" id="fpsVal">30</span>
+        </div>
+      </div>
+
+      <div class="row">
+        <label>明るさ（全体）</label>
+        <div class="ctl">
+          <input id="gain" type="range" min="0" max="1" step="0.01" value="1" />
+          <span class="mono" id="gainVal">1.00</span>
+        </div>
+      </div>
+
+      <div class="row">
+        <label>ガンマ</label>
+        <div class="ctl">
+          <input id="gamma" type="range" min="1.0" max="3.0" step="0.05" value="2.2" />
+          <span class="mono" id="gammaVal">2.20</span>
+        </div>
+      </div>
+
+      <div class="mini">
+        送信が詰まった場合は遅延を溜めずにフレームをスキップし、リアルタイム性を優先します。
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="head">
+        <div class="h">原点（x,y）</div>
+        <div class="hint">この座標を基準にエフェクト</div>
+      </div>
+
+      <div class="grid">
+        <div>
+          <label>origin X（mm）</label>
+          <input id="originX" type="number" value="0" step="1" />
+        </div>
+        <div>
+          <label>origin Y（mm）</label>
+          <input id="originY" type="number" value="0" step="1" />
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:10px;">
+        <div class="toggle">
+          <input id="showOrigin" type="checkbox" checked />
+          <label for="showOrigin" style="cursor:pointer;">原点マーカー表示</label>
+        </div>
+        <div class="toggle">
+          <input id="originSnap" type="checkbox" checked />
+          <label for="originSnap" style="cursor:pointer;">原点もスナップ</label>
+        </div>
+      </div>
+
+      <div class="split" style="margin-top:10px;">
+        <button id="btnOriginToSelected">Origin = 選択board中心</button>
+        <button id="btnOriginZero">Origin = (0,0)</button>
+      </div>
+
+      <div class="mini">
+        原点は「ワールド(mm)座標」です。エフェクト側では (x - originX, y - originY) を基本に使えます。
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="head">
+        <div class="h">スナップ・表示</div>
+        <div class="hint">整列・見た目</div>
+      </div>
+
+      <div class="grid">
+        <div>
+          <label>スナップ間隔（mm）</label>
+          <input id="snapMm" type="number" value="10" min="1" max="200" />
+        </div>
+        <div>
+          <label>表示スケール（mm→px）</label>
+          <input id="mm2px" type="number" value="2.2" step="0.1" min="0.6" max="10" />
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:10px;">
+        <div class="toggle">
+          <input id="snapOn" type="checkbox" checked />
+          <label for="snapOn" style="cursor:pointer;">スナップON</label>
+        </div>
+        <div class="toggle">
+          <input id="showRings" type="checkbox" checked />
+          <label for="showRings" style="cursor:pointer;">リング表示</label>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="toggle">
+          <input id="showIndex" type="checkbox" />
+          <label for="showIndex" style="cursor:pointer;">index表示（重い）</label>
+        </div>
+        <div class="toggle">
+          <input id="showGrid" type="checkbox" checked />
+          <label for="showGrid" style="cursor:pointer;">グリッド表示</label>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="head">
+        <div class="h">選択基板</div>
+        <div class="hint">board 0〜9</div>
+      </div>
+
+      <div class="grid">
+        <div>
+          <label>board</label>
+          <select id="selBoard"></select>
+        </div>
+        <div>
+          <label>回転（deg）</label>
+          <input id="rotDeg" type="number" value="0" step="1" />
+        </div>
+        <div>
+          <label>X（mm）</label>
+          <input id="posX" type="number" value="0" step="1" />
+        </div>
+        <div>
+          <label>Y（mm）</label>
+          <input id="posY" type="number" value="0" step="1" />
+        </div>
+      </div>
+
+      <div class="split" style="margin-top:10px;">
+        <button id="btnResetBoard">Reset Board</button>
+        <button id="btnResetAll">Reset All</button>
+      </div>
+      <div class="mini">
+        現場の実配置はここで座標・回転を合わせ、JSONとして保存して使い回します。
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="head">
+        <div class="h">JSON（配置の保存/読込）</div>
+        <div class="hint">Webだけで完結</div>
+      </div>
+
+      <div class="split">
+        <button id="btnExport">Export JSON</button>
+        <button id="btnCopy">Copy JSON</button>
+        <button id="btnImport">Import JSON</button>
+      </div>
+      <input id="fileInput" type="file" accept="application/json" style="display:none;" />
+      <div class="mini">
+        JSONには boardごとの cx, cy, rotDeg が入ります。PC側でレイアウトと演出を完全に管理できます。
+      </div>
+    </div>
+  </div>
+
+  <div id="hintbar">
+    <div class="left">
+      <span class="mono" id="selInfo">selected: board 0</span>
+      <span class="mono" id="originInfo">origin: (0,0) mm</span>
+      <span class="mono">protocol: "NP" + len(u16LE) + seq(u16LE) + payload</span>
+      <span class="mono">payload: RGB * 480</span>
+    </div>
+    <div class="right">
+      <span class="mono" id="mouseInfo">x: -- mm / y: -- mm</span>
+      <span class="mono" id="dropInfo">drops: 0</span>
+    </div>
+  </div>
+
   <canvas id="c"></canvas>
 
 <script>
 (() => {
-  const NUM_LEDS = 192; // 最小構成：1基板=48
-  const FRAME_LEN = NUM_LEDS * 3;
+  // =========================================================
+  // 0) 基本設定
+  // =========================================================
+  const BOARDS = 10;
+  const LEDS_PER_BOARD = 48;
+  const TOTAL = BOARDS * LEDS_PER_BOARD; // 480
+  const FRAME_LEN = TOTAL * 3;           // 1440
+  const BAUD = 1000000;
 
+  // =========================================================
+  // 1) DOM
+  // =========================================================
   const canvas = document.getElementById("c");
   const ctx = canvas.getContext("2d", { alpha: false });
 
@@ -36,138 +467,573 @@
   const btnDisconnect = document.getElementById("btnDisconnect");
   const btnStart = document.getElementById("btnStart");
   const btnStop = document.getElementById("btnStop");
-  const statusEl = document.getElementById("status");
+  const btnCenter = document.getElementById("btnCenter");
 
+  const btnZoomOut = document.getElementById("btnZoomOut");
+  const btnZoomIn = document.getElementById("btnZoomIn");
+  const btnZoomReset = document.getElementById("btnZoomReset");
+
+  const pill = document.getElementById("pill");
+  const statusLine = document.getElementById("statusLine");
+  const statusSub = document.getElementById("statusSub");
+
+  const fps = document.getElementById("fps");
+  const fpsVal = document.getElementById("fpsVal");
+  const gain = document.getElementById("gain");
+  const gainVal = document.getElementById("gainVal");
+  const gamma = document.getElementById("gamma");
+  const gammaVal = document.getElementById("gammaVal");
+
+  const snapOn = document.getElementById("snapOn");
+  const snapMm = document.getElementById("snapMm");
+  const mm2px = document.getElementById("mm2px");
+  const showRings = document.getElementById("showRings");
+  const showIndex = document.getElementById("showIndex");
+  const showGrid = document.getElementById("showGrid");
+
+  const selBoard = document.getElementById("selBoard");
+  const rotDeg = document.getElementById("rotDeg");
+  const posX = document.getElementById("posX");
+  const posY = document.getElementById("posY");
+  const btnResetBoard = document.getElementById("btnResetBoard");
+  const btnResetAll = document.getElementById("btnResetAll");
+
+  const btnExport = document.getElementById("btnExport");
+  const btnCopy = document.getElementById("btnCopy");
+  const btnImport = document.getElementById("btnImport");
+  const fileInput = document.getElementById("fileInput");
+
+  const originX = document.getElementById("originX");
+  const originY = document.getElementById("originY");
+  const showOrigin = document.getElementById("showOrigin");
+  const originSnap = document.getElementById("originSnap");
+  const btnOriginToSelected = document.getElementById("btnOriginToSelected");
+  const btnOriginZero = document.getElementById("btnOriginZero");
+
+  const selInfo = document.getElementById("selInfo");
+  const originInfo = document.getElementById("originInfo");
+  const mouseInfo = document.getElementById("mouseInfo");
+  const dropInfo = document.getElementById("dropInfo");
+
+  // =========================================================
+  // 2) WebSerial
+  // =========================================================
   let port = null;
   let writer = null;
+  let sendInFlight = false;
+  let seq = 0;
+  let drops = 0;
+
+  // =========================================================
+  // 3) 状態
+  // =========================================================
   let running = false;
   let rafId = null;
+  let lastTick = 0;
+  let lastDraw = 0;
 
-  // 48点を円状に配置（最小シミュ）
-  const ledPos = [];
-  function rebuildLayout() {
-    ledPos.length = 0;
-    const w = canvas.width, h = canvas.height;
-    const cx = w * 0.5, cy = h * 0.5;
-    const r = Math.min(w, h) * 0.28;
-    for (let i = 0; i < NUM_LEDS; i++) {
-      const a = (i / NUM_LEDS) * Math.PI * 2;
-      ledPos.push({ x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r });
-    }
-  }
+  // =========================================================
+  // 4) ビュー変換（mm <-> screen）
+  // =========================================================
+  let DPR = 1;
+  let view = {
+    cx: 0,      // ビュー中心(mm)
+    cy: 0,
+    scale: 2.2, // mm→px（ズーム）
+  };
 
   function resize() {
-    const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
-    canvas.width = Math.floor(window.innerWidth * dpr);
-    canvas.height = Math.floor(window.innerHeight * dpr);
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    rebuildLayout();
+    DPR = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    canvas.width = Math.floor(window.innerWidth * DPR);
+    canvas.height = Math.floor(window.innerHeight * DPR);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   }
   window.addEventListener("resize", resize);
   resize();
 
-  function setStatus(s) { statusEl.textContent = s; }
-
-  function clamp255(v) { return v < 0 ? 0 : v > 255 ? 255 : v|0; }
-
-  // エフェクト：回る1点＋残光（最小）
-  function makeFrame(tSec) {
-    const rgb = new Uint8Array(FRAME_LEN);
-
-    // デフォルト：薄赤（20/255）をベースに
-    for (let i = 0; i < NUM_LEDS; i++) {
-      rgb[i*3+0] = 20; // R
-      rgb[i*3+1] = 0;  // G
-      rgb[i*3+2] = 0;  // B
-    }
-
-    const head = Math.floor((tSec * 10) % NUM_LEDS);
-    for (let k = 0; k < 10; k++) {
-      const idx = (head - k + NUM_LEDS) % NUM_LEDS;
-      const a = Math.exp(-k * 0.35);        // 残光
-      rgb[idx*3+0] = clamp255(20 + 120*a);  // R
-      rgb[idx*3+1] = clamp255(40*a);        // G
-      rgb[idx*3+2] = clamp255(160*a);       // B
-    }
-    return rgb;
-  }
-
-  function drawSim(rgb) {
+  function mmToScreen(x_mm, y_mm) {
     const w = window.innerWidth, h = window.innerHeight;
-    ctx.clearRect(0, 0, w, h);
+    const sx = w*0.5 + (x_mm - view.cx) * view.scale;
+    const sy = h*0.58 - (y_mm - view.cy) * view.scale;
+    return { sx, sy };
+  }
+  function screenToMm(sx, sy) {
+    const w = window.innerWidth, h = window.innerHeight;
+    const x = view.cx + (sx - w*0.5) / view.scale;
+    const y = view.cy - (sy - h*0.58) / view.scale;
+    return { x, y };
+  }
 
-    // 背景
-    ctx.fillStyle = "#0b0f14";
-    ctx.fillRect(0, 0, w, h);
+  // =========================================================
+  // 5) Zoom
+  // =========================================================
+  const ZOOM_MIN = 0.6;   // mm→px 最小
+  const ZOOM_MAX = 10.0;  // mm→px 最大
+  function clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
 
-    // LED描画
-    for (let i = 0; i < NUM_LEDS; i++) {
-      const r = rgb[i*3+0], g = rgb[i*3+1], b = rgb[i*3+2];
-      const p = ledPos[i];
+  // 指定scaleへズーム（anchor: 画面座標基準でズーム）
+  function setZoom(newScale, anchorSx = window.innerWidth*0.5, anchorSy = window.innerHeight*0.58) {
+    newScale = clamp(newScale, ZOOM_MIN, ZOOM_MAX);
 
-      ctx.beginPath();
-      ctx.fillStyle = `rgb(${r},${g},${b})`;
-      ctx.arc(p.x, p.y, 7, 0, Math.PI*2);
-      ctx.fill();
+    const before = screenToMm(anchorSx, anchorSy);
+    view.scale = newScale;
+    const after = screenToMm(anchorSx, anchorSy);
+
+    view.cx += (before.x - after.x);
+    view.cy += (before.y - after.y);
+
+    mm2px.value = String(view.scale.toFixed(2));
+  }
+
+  canvas.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left;
+    const sy = e.clientY - rect.top;
+
+    const factor = Math.pow(1.12, -e.deltaY / 100);
+    setZoom(view.scale * factor, sx, sy);
+  }, { passive: false });
+
+  btnZoomIn.addEventListener("click", () => setZoom(view.scale * 1.2));
+  btnZoomOut.addEventListener("click", () => setZoom(view.scale / 1.2));
+  btnZoomReset.addEventListener("click", () => setZoom(2.2));
+
+  // =========================================================
+  // 6) Geometry（基板LEDの座標計算）
+  // =========================================================
+  const deg2rad = (d) => d * Math.PI / 180;
+  const rad2deg = (r) => r * 180 / Math.PI;
+
+  function makeLocalLEDs48() {
+    const pts = new Array(48);
+
+    // 外周: dia92, 30, start 0deg, CCW -> index 0..29
+    {
+      const dia = 92, n = 30, startDeg = 0;
+      const r = dia / 2;
+      for (let i = 0; i < n; i++) {
+        const a = deg2rad(startDeg + (360 * i / n));
+        pts[i] = { x: Math.cos(a) * r, y: Math.sin(a) * r };
+      }
+    }
+    // 中: dia34, 12, start 15deg, CCW -> index 30..41
+    {
+      const dia = 34, n = 12, startDeg = 15;
+      const r = dia / 2;
+      for (let i = 0; i < n; i++) {
+        const a = deg2rad(startDeg + (360 * i / n));
+        pts[30 + i] = { x: Math.cos(a) * r, y: Math.sin(a) * r };
+      }
+    }
+    // 内: dia18, 6, start 0deg, CCW -> index 42..47
+    {
+      const dia = 18, n = 6, startDeg = 0;
+      const r = dia / 2;
+      for (let i = 0; i < n; i++) {
+        const a = deg2rad(startDeg + (360 * i / n));
+        pts[42 + i] = { x: Math.cos(a) * r, y: Math.sin(a) * r };
+      }
+    }
+
+    return pts;
+  }
+  const local48 = makeLocalLEDs48();
+
+  // board配列（mm）
+  const boards = [];
+  function resetAllBoards() {
+    boards.length = 0;
+    const spacing = 140; // mm
+    const startX = -((BOARDS - 1) * spacing) / 2;
+    for (let b = 0; b < BOARDS; b++) {
+      boards.push({ cx: startX + b*spacing, cy: 0, rotDeg: 0 });
     }
   }
+  resetAllBoards();
 
-  async function sendFrame(rgb) {
-    if (!writer) return;
-    // "NP" + len(u16 LE) + payload
-    const packet = new Uint8Array(2 + 2 + rgb.length);
-    packet[0] = "N".charCodeAt(0);
-    packet[1] = "P".charCodeAt(0);
-    packet[2] = rgb.length & 0xff;
-    packet[3] = (rgb.length >> 8) & 0xff;
-    packet.set(rgb, 4);
+  // worldを「配列 of object」から「連続配列」に寄せる（エフェクト用に高速）
+  // worldX[gi], worldY[gi], worldB[gi], worldI[gi]
+  const worldX = new Float32Array(TOTAL);
+  const worldY = new Float32Array(TOTAL);
+  const worldB = new Uint16Array(TOTAL);
+  const worldI = new Uint16Array(TOTAL);
 
-    await writer.write(packet);
+  function rebuildWorld() {
+    for (let b = 0; b < BOARDS; b++) {
+      const bd = boards[b];
+      const th = deg2rad(bd.rotDeg);
+      const c = Math.cos(th), s = Math.sin(th);
+      for (let i = 0; i < LEDS_PER_BOARD; i++) {
+        const p = local48[i];
+        const x = p.x * c - p.y * s + bd.cx;
+        const y = p.x * s + p.y * c + bd.cy;
+        const gi = b * LEDS_PER_BOARD + i;
+        worldX[gi] = x;
+        worldY[gi] = y;
+        worldB[gi] = b;
+        worldI[gi] = i;
+      }
+    }
+  }
+  rebuildWorld();
+
+  // =========================================================
+  // 7) 原点（x,y）管理：この座標を基準にエフェクトを作る
+  // =========================================================
+  const origin = { x: 0, y: 0 };
+
+  function snapValue(v, step) { return Math.round(v / step) * step; }
+  function maybeSnap(v, step, enabled) { return enabled ? snapValue(v, step) : v; }
+
+  function syncOriginUI() {
+    originX.value = String(Math.round(origin.x*10)/10);
+    originY.value = String(Math.round(origin.y*10)/10);
+    originInfo.textContent = `origin: (${origin.x.toFixed(1)},${origin.y.toFixed(1)}) mm`;
+  }
+  function applyOriginFromUI() {
+    origin.x = Number(originX.value) || 0;
+    origin.y = Number(originY.value) || 0;
+    syncOriginUI();
+  }
+  originX.addEventListener("change", applyOriginFromUI);
+  originY.addEventListener("change", applyOriginFromUI);
+
+  btnOriginZero.addEventListener("click", () => {
+    origin.x = 0; origin.y = 0;
+    syncOriginUI();
+  });
+  btnOriginToSelected.addEventListener("click", () => {
+    const bd = boards[selectedBoard];
+    origin.x = bd.cx; origin.y = bd.cy;
+    syncOriginUI();
+  });
+
+  syncOriginUI();
+
+  // =========================================================
+  // 8) UI初期化（board選択など）
+  // =========================================================
+  for (let b = 0; b < BOARDS; b++) {
+    const opt = document.createElement("option");
+    opt.value = String(b);
+    opt.textContent = `board ${b}`;
+    selBoard.appendChild(opt);
+  }
+  let selectedBoard = 0;
+  selBoard.value = String(selectedBoard);
+
+  function syncSelectedUI() {
+    const bd = boards[selectedBoard];
+    rotDeg.value = String(Math.round(bd.rotDeg*100)/100);
+    posX.value = String(Math.round(bd.cx*100)/100);
+    posY.value = String(Math.round(bd.cy*100)/100);
+    selInfo.textContent = `selected: board ${selectedBoard}`;
+  }
+  syncSelectedUI();
+
+  function setStatus(state, sub="") {
+    statusLine.textContent = state;
+    if (sub) statusSub.textContent = sub;
+
+    if (state.startsWith("running")) {
+      pill.style.background = "rgba(52,211,153,.85)";
+      pill.style.boxShadow = "0 0 0 2px rgba(52,211,153,.18), 0 10px 30px rgba(52,211,153,.20)";
+    } else if (state.startsWith("connected")) {
+      pill.style.background = "rgba(125,211,252,.85)";
+      pill.style.boxShadow = "0 0 0 2px rgba(125,211,252,.18), 0 10px 30px rgba(125,211,252,.18)";
+    } else if (state.includes("error") || state.includes("failed")) {
+      pill.style.background = "rgba(251,113,133,.9)";
+      pill.style.boxShadow = "0 0 0 2px rgba(251,113,133,.18), 0 10px 30px rgba(251,113,133,.20)";
+    } else {
+      pill.style.background = "rgba(255,255,255,.28)";
+      pill.style.boxShadow = "0 0 0 2px rgba(255,255,255,.08)";
+    }
+  }
+  setStatus("idle", "fps: --  seq: ----");
+
+  // ===== コントロール反映 =====
+  function clamp255(v){ return v < 0 ? 0 : v > 255 ? 255 : (v|0); }
+
+  // gamma LUT（0..255）
+  let gammaLUT = new Uint8Array(256);
+  function rebuildGammaLUT() {
+    const g = parseFloat(gamma.value);
+    for (let i = 0; i < 256; i++) {
+      const x = i / 255;
+      gammaLUT[i] = clamp255(Math.round(Math.pow(x, g) * 255));
+    }
+  }
+  rebuildGammaLUT();
+
+  fps.addEventListener("input", () => fpsVal.textContent = fps.value);
+  gain.addEventListener("input", () => gainVal.textContent = Number(gain.value).toFixed(2));
+  gamma.addEventListener("input", () => { gammaVal.textContent = Number(gamma.value).toFixed(2); rebuildGammaLUT(); });
+
+  // mm2px入力は setZoom 経由で反映
+  mm2px.addEventListener("change", () => {
+    const v = parseFloat(mm2px.value);
+    if (Number.isFinite(v) && v > 0.1) setZoom(v);
+  });
+  setZoom(parseFloat(mm2px.value) || 2.2);
+
+  // selection
+  selBoard.addEventListener("change", () => {
+    selectedBoard = parseInt(selBoard.value, 10) || 0;
+    syncSelectedUI();
+  });
+
+  function applySelectedFromUI() {
+    const bd = boards[selectedBoard];
+    bd.cx = Number(posX.value);
+    bd.cy = Number(posY.value);
+    bd.rotDeg = Number(rotDeg.value);
+    rebuildWorld();
+  }
+  posX.addEventListener("change", () => { applySelectedFromUI(); syncSelectedUI(); });
+  posY.addEventListener("change", () => { applySelectedFromUI(); syncSelectedUI(); });
+  rotDeg.addEventListener("change", () => { applySelectedFromUI(); syncSelectedUI(); });
+
+  btnResetBoard.addEventListener("click", () => {
+    boards[selectedBoard] = { cx: 0, cy: 0, rotDeg: 0 };
+    rebuildWorld();
+    syncSelectedUI();
+  });
+  btnResetAll.addEventListener("click", () => {
+    resetAllBoards();
+    rebuildWorld();
+    syncSelectedUI();
+  });
+  btnCenter.addEventListener("click", () => {
+    let sx = 0, sy = 0;
+    for (const b of boards){ sx += b.cx; sy += b.cy; }
+    view.cx = sx / boards.length;
+    view.cy = sy / boards.length;
+  });
+
+  // =========================================================
+  // 9) JSON export/import
+  // =========================================================
+  function makeLayoutJSON() {
+    return {
+      version: 1,
+      meta: {
+        boards: BOARDS,
+        ledsPerBoard: LEDS_PER_BOARD,
+        total: TOTAL,
+        note: "board order: 0..9, each board index: 0..47 (PDF geometry: outer 30, mid 12 start 15deg, inner 6)."
+      },
+      origin: { x: origin.x, y: origin.y },
+      boards: boards.map((b, idx) => ({ id: idx, cx: b.cx, cy: b.cy, rotDeg: b.rotDeg }))
+    };
+  }
+  function applyLayoutJSON(obj) {
+    if (!obj || !Array.isArray(obj.boards)) return false;
+    if (obj.boards.length !== BOARDS) return false;
+
+    for (let i = 0; i < BOARDS; i++) {
+      const it = obj.boards[i];
+      boards[i] = {
+        cx: Number(it.cx) || 0,
+        cy: Number(it.cy) || 0,
+        rotDeg: Number(it.rotDeg) || 0
+      };
+    }
+    if (obj.origin && Number.isFinite(obj.origin.x) && Number.isFinite(obj.origin.y)) {
+      origin.x = Number(obj.origin.x);
+      origin.y = Number(obj.origin.y);
+      syncOriginUI();
+    }
+    rebuildWorld();
+    syncSelectedUI();
+    return true;
   }
 
-  function loop() {
-    if (!running) return;
-    const tSec = performance.now() / 1000;
-    const frame = makeFrame(tSec);
-    drawSim(frame);
+  btnExport.addEventListener("click", () => {
+    const obj = makeLayoutJSON();
+    const blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "led_layout.json";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  });
 
-    // 送信（詰まりにくいように await しすぎない設計にするならキュー化するが、最小構成なので直列）
-    sendFrame(frame).catch(err => {
-      console.error(err);
-      setStatus("send error");
-      stop();
-    });
+  btnCopy.addEventListener("click", async () => {
+    const obj = makeLayoutJSON();
+    const text = JSON.stringify(obj, null, 2);
+    try {
+      await navigator.clipboard.writeText(text);
+      setStatus(writer ? (running ? "running" : "connected") : "idle",
+        `fps: ${fps.value}  seq: ${String(seq).padStart(4,"0")}  copied`);
+      setTimeout(() => setStatus(writer ? (running ? "running" : "connected") : "idle"), 650);
+    } catch {
+      alert("クリップボードにコピーできませんでした。");
+    }
+  });
 
-    rafId = requestAnimationFrame(loop);
+  btnImport.addEventListener("click", () => fileInput.click());
+  fileInput.addEventListener("change", async () => {
+    const f = fileInput.files?.[0];
+    fileInput.value = "";
+    if (!f) return;
+    try {
+      const text = await f.text();
+      const obj = JSON.parse(text);
+      const ok = applyLayoutJSON(obj);
+      if (!ok) alert("JSON形式が想定と違います（boards数など）");
+    } catch (e) {
+      console.error(e);
+      alert("JSONの読み込みに失敗しました。");
+    }
+  });
+
+  // =========================================================
+  // 10) クリック判定（基板選択）
+  // =========================================================
+  function dist2(ax, ay, bx, by) {
+    const dx = ax - bx, dy = ay - by;
+    return dx*dx + dy*dy;
+  }
+  function pickBoardAt(sx, sy) {
+    const mm = screenToMm(sx, sy);
+    let best = 0, bestD = Infinity;
+    for (let b = 0; b < BOARDS; b++) {
+      const d = dist2(mm.x, mm.y, boards[b].cx, boards[b].cy);
+      if (d < bestD) { bestD = d; best = b; }
+    }
+    if (bestD <= 60*60) return best;
+    return null;
   }
 
-  function start() {
-    if (!writer) return;
-    running = true;
-    btnStart.disabled = true;
-    btnStop.disabled = false;
-    setStatus("running");
-    loop();
+  // =========================================================
+  // 11) マウス操作（ドラッグ移動/回転）+ Ctrlクリックで原点設定
+  // =========================================================
+  let mouse = { sx:0, sy:0, down:false, dragging:false };
+  let drag = {
+    board: 0,
+    mode: "move", // "move" | "rot"
+    startCx: 0, startCy: 0, startRot: 0,
+    startMmX: 0, startMmY: 0,
+    startAngle: 0
+  };
+
+  function onPointerMove(e) {
+    const rect = canvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left;
+    const sy = e.clientY - rect.top;
+    mouse.sx = sx; mouse.sy = sy;
+
+    const mm = screenToMm(sx, sy);
+    mouseInfo.textContent = `x: ${mm.x.toFixed(1)} mm / y: ${mm.y.toFixed(1)} mm`;
+
+    if (!mouse.down || !mouse.dragging) return;
+
+    const step = Math.max(1, Number(snapMm.value) || 10);
+    const snapEnabled = snapOn.checked && !e.altKey;
+
+    const bd = boards[drag.board];
+
+    if (drag.mode === "move") {
+      const dx = mm.x - drag.startMmX;
+      const dy = mm.y - drag.startMmY;
+      let nx = drag.startCx + dx;
+      let ny = drag.startCy + dy;
+      nx = maybeSnap(nx, step, snapEnabled);
+      ny = maybeSnap(ny, step, snapEnabled);
+
+      bd.cx = nx;
+      bd.cy = ny;
+    } else {
+      const ang = Math.atan2(mm.y - bd.cy, mm.x - bd.cx);
+      let dAng = ang - drag.startAngle;
+      let nRot = drag.startRot + rad2deg(dAng);
+      if (snapEnabled) nRot = snapValue(nRot, 5);
+      bd.rotDeg = nRot;
+    }
+
+    rebuildWorld();
+    if (drag.board === selectedBoard) syncSelectedUI();
   }
 
-  function stop() {
-    running = false;
-    btnStart.disabled = !writer;
-    btnStop.disabled = true;
-    setStatus(writer ? "connected" : "idle");
-    if (rafId) cancelAnimationFrame(rafId);
-    rafId = null;
+  function setOriginAtWorld(mmX, mmY, e) {
+    const step = Math.max(1, Number(snapMm.value) || 10);
+    const snapEnabled = originSnap.checked && snapOn.checked && !e.altKey;
+
+    origin.x = maybeSnap(mmX, step, snapEnabled);
+    origin.y = maybeSnap(mmY, step, snapEnabled);
+    syncOriginUI();
+
+    // 原点を変更したら、原点発火系のエフェクトに通知（必要なら）
+    Effects.onOriginChanged();
   }
 
-  btnConnect.addEventListener("click", async () => {
+  function onPointerDown(e) {
+    const rect = canvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left;
+    const sy = e.clientY - rect.top;
+
+    const mm = screenToMm(sx, sy);
+
+    // Ctrl+クリック（or Meta+クリック）で「原点」を設定
+    if (e.ctrlKey || e.metaKey) {
+      setOriginAtWorld(mm.x, mm.y, e);
+      return;
+    }
+
+    const picked = pickBoardAt(sx, sy);
+    if (picked !== null) {
+      selectedBoard = picked;
+      selBoard.value = String(selectedBoard);
+      syncSelectedUI();
+    }
+
+    mouse.down = true;
+    mouse.dragging = true;
+
+    drag.board = selectedBoard;
+    drag.mode = e.shiftKey ? "rot" : "move";
+
+    const bd = boards[drag.board];
+    drag.startCx = bd.cx;
+    drag.startCy = bd.cy;
+    drag.startRot = bd.rotDeg;
+    drag.startMmX = mm.x;
+    drag.startMmY = mm.y;
+    drag.startAngle = Math.atan2(mm.y - bd.cy, mm.x - bd.cx);
+  }
+
+  function onPointerUp() {
+    mouse.down = false;
+    mouse.dragging = false;
+  }
+
+  canvas.addEventListener("pointermove", onPointerMove);
+  canvas.addEventListener("pointerdown", onPointerDown);
+  window.addEventListener("pointerup", onPointerUp);
+
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Delete" || e.key === "Backspace") {
+      boards[selectedBoard] = { cx: 0, cy: 0, rotDeg: 0 };
+      rebuildWorld();
+      syncSelectedUI();
+    }
+  });
+
+  // =========================================================
+  // 12) WebSerial 接続
+  // =========================================================
+  async function connect() {
     try {
       if (!("serial" in navigator)) {
         alert("WebSerial未対応です。Chrome系で開いてください。");
         return;
       }
       port = await navigator.serial.requestPort();
-      await port.open({ baudRate: 115200 });
-
+      await port.open({ baudRate: BAUD });
       writer = port.writable.getWriter();
 
       btnConnect.disabled = true;
@@ -175,26 +1041,19 @@
       btnStart.disabled = false;
       btnStop.disabled = true;
 
-      setStatus("connected");
+      setStatus("connected", `fps: ${fps.value}  seq: ${String(seq).padStart(4,"0")}`);
     } catch (e) {
       console.error(e);
+      port = null; writer = null;
       setStatus("connect failed");
-      port = null;
-      writer = null;
     }
-  });
+  }
 
-  btnDisconnect.addEventListener("click", async () => {
+  async function disconnect() {
     try {
       stop();
-      if (writer) {
-        writer.releaseLock();
-        writer = null;
-      }
-      if (port) {
-        await port.close();
-        port = null;
-      }
+      if (writer) { writer.releaseLock(); writer = null; }
+      if (port) { await port.close(); port = null; }
     } catch (e) {
       console.error(e);
     } finally {
@@ -202,12 +1061,430 @@
       btnDisconnect.disabled = true;
       btnStart.disabled = true;
       btnStop.disabled = true;
-      setStatus("idle");
+      setStatus("idle", "fps: --  seq: ----");
     }
-  });
+  }
+
+  btnConnect.addEventListener("click", connect);
+  btnDisconnect.addEventListener("click", disconnect);
+
+  // =========================================================
+  // 13) Effects（エフェクト拡張しやすい枠）
+  //     - ここだけ増やせば新パターンが増える構造
+  //     - エフェクトは「原点基準座標」を素で使える
+  // =========================================================
+  const Effects = (() => {
+    // ---- 共通ヘルパ ----
+    function relX(gi){ return worldX[gi] - origin.x; }
+    function relY(gi){ return worldY[gi] - origin.y; }
+    function relR(gi){ const x = relX(gi), y = relY(gi); return Math.hypot(x,y); }
+    function relTheta(gi){ return Math.atan2(relY(gi), relX(gi)); }
+
+    // 出力RGB（0..255）に「加算」する（クリップ込み）
+    function addRGB(out, gi, r, g, b) {
+      const k = gi*3;
+      out[k+0] = clamp255(out[k+0] + r);
+      out[k+1] = clamp255(out[k+1] + g);
+      out[k+2] = clamp255(out[k+2] + b);
+    }
+
+    // 出力RGBを「上書き」する
+    function setRGB(out, gi, r, g, b) {
+      const k = gi*3;
+      out[k+0] = r; out[k+1] = g; out[k+2] = b;
+    }
+
+    // ---- エフェクト定義（例）----
+    // 1) ベース（常時点灯：赤20）
+    function BaseRed20(ctx, out) {
+      for (let gi = 0; gi < TOTAL; gi++) setRGB(out, gi, 20, 0, 0);
+    }
+
+    // 2) 原点周辺を光らせる（原点がどこでも目視しやすい）
+    //    dist(mm)で減衰。rippleを足す前の土台にも使える。
+    function OriginGlow(ctx, out) {
+      const radius = 55; // mm（ここを基準に）
+      const inv = 1 / radius;
+      for (let gi = 0; gi < TOTAL; gi++) {
+        const d = relR(gi); // 原点基準
+        if (d > radius) continue;
+        const a = 1 - (d * inv);
+        // 少し青寄りで原点を見せる
+        addRGB(out, gi, 30*a, 40*a, 140*a);
+      }
+    }
+
+    // 3) 原点を通過する「帯」：relXで流す（原点が変わると帯も連動）
+    function BandFlowX(ctx, out) {
+      const t = ctx.t;
+      const speed = 240; // mm/sec
+      const sigma = 35;  // mm
+      const span = 520;  // mm（適当：原点を中心に往復ではなくループ）
+      const head = (-span*0.5) + ((t * speed) % span); // relX上の位置
+
+      for (let gi = 0; gi < TOTAL; gi++) {
+        const dx = relX(gi) - head;
+        const a = Math.exp(-(dx*dx)/(2*sigma*sigma));
+        if (a < 0.01) continue;
+        addRGB(out, gi, 80*a, 30*a, 160*a);
+      }
+    }
+
+    // 4) Ripple（波紋）：クリックで原点変えるだけで発火点が変わる
+    //    連続発火したいなら「キュー」を持たせる構造にすると良い
+    function Ripple(ctx, out) {
+      const t = ctx.t;
+      const speed = 190;  // mm/sec
+      const period = 1.1; // sec（リング間隔）
+      const width = 14;   // mm（リングの太さ）
+
+      for (let gi = 0; gi < TOTAL; gi++) {
+        const r = relR(gi);
+        const phase = (r / speed) - t; // 0に近いほど「現在のリング」
+        // 0..1のこぎり波に近い値を作る
+        const p = ((phase % period) + period) % period; // 0..period
+        const d = Math.min(p, period - p); // 中心(0 or period)からの距離
+        const a = Math.exp(-(d*d)/(2*(width/ speed * 0.6)*(width/ speed * 0.6) + 1e-6));
+        if (a < 0.02) continue;
+        addRGB(out, gi, 50*a, 90*a, 180*a);
+      }
+    }
+
+    // ---- ここが「増やしやすい」本体 ----
+    // 有効なエフェクトをここに並べるだけで合成される（順序もここで決まる）
+    let chain = [ BaseRed20, OriginGlow, BandFlowX, Ripple ];
+
+    // 原点変更時に何かしたい（将来：Rippleの発火時刻をリセット等）
+    function onOriginChanged() {
+      // 例：原点を動かしたタイミングで波紋を目立たせたいなら、ここで内部stateを更新する
+      // 今回はステートレスなので何もしない
+    }
+
+    // ctxを作って、chainを合成してフレームを返す
+    function renderFrame(tSec, outRGB) {
+      // outRGB: Uint8Array(FRAME_LEN) を想定（外側で確保し使い回す）
+      const ctx = {
+        t: tSec,
+        originX: origin.x,
+        originY: origin.y,
+        // 将来：クリック座標 / 入力イベント / 何かのセンサー値もここに足す
+      };
+
+      // 最初に0クリア（Baseが全上書きなら不要だが、拡張で事故らないように）
+      outRGB.fill(0);
+
+      // 合成
+      for (const fx of chain) fx(ctx, outRGB);
+
+      return outRGB;
+    }
+
+    // chain操作（将来：UIで切替したいとき用）
+    function setChain(arr){ chain = arr; }
+    function getChain(){ return chain.slice(); }
+
+    return {
+      renderFrame,
+      setChain,
+      getChain,
+      onOriginChanged,
+      // ヘルパを外に出したい場合はここで公開（必要になったら）
+    };
+  })();
+
+  // =========================================================
+  // 14) 送信（詰まりはスキップ）
+  // =========================================================
+  async function sendFrame(rgb) {
+    if (!writer) return;
+    if (sendInFlight) { drops++; dropInfo.textContent = `drops: ${drops}`; return; }
+    sendInFlight = true;
+
+    const packet = new Uint8Array(2 + 2 + 2 + rgb.length);
+    packet[0] = 78; // 'N'
+    packet[1] = 80; // 'P'
+    packet[2] = rgb.length & 0xff;
+    packet[3] = (rgb.length >> 8) & 0xff;
+    packet[4] = seq & 0xff;
+    packet[5] = (seq >> 8) & 0xff;
+    packet.set(rgb, 6);
+
+    seq = (seq + 1) & 0xffff;
+
+    try {
+      await writer.write(packet);
+    } catch (e) {
+      console.error(e);
+      setStatus("send error");
+      stop();
+    } finally {
+      sendInFlight = false;
+    }
+  }
+
+  // =========================================================
+  // 15) 色処理（gain + gamma）
+  // =========================================================
+  function applyGainGamma(rgb) {
+    const G = Math.max(0, Math.min(1, Number(gain.value)));
+    if (G !== 1) {
+      for (let i = 0; i < rgb.length; i++) rgb[i] = clamp255(Math.round(rgb[i] * G));
+    }
+    for (let i = 0; i < rgb.length; i++) rgb[i] = gammaLUT[rgb[i]];
+  }
+
+  // =========================================================
+  // 16) 描画（見た目）
+  // =========================================================
+  function drawBackground() {
+    const w = window.innerWidth, h = window.innerHeight;
+    ctx.fillStyle = "#070a10";
+    ctx.fillRect(0, 0, w, h);
+
+    const g1 = ctx.createRadialGradient(w*0.68, h*0.20, 0, w*0.68, h*0.20, Math.min(w,h)*0.55);
+    g1.addColorStop(0, "rgba(125,211,252,0.08)");
+    g1.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = g1;
+    ctx.fillRect(0,0,w,h);
+
+    const g2 = ctx.createRadialGradient(w*0.15, h*0.40, 0, w*0.15, h*0.40, Math.min(w,h)*0.55);
+    g2.addColorStop(0, "rgba(167,139,250,0.06)");
+    g2.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = g2;
+    ctx.fillRect(0,0,w,h);
+  }
+
+  function drawGrid() {
+    if (!showGrid.checked) return;
+    const w = window.innerWidth, h = window.innerHeight;
+    const stepMm = Math.max(5, Number(snapMm.value) || 10);
+
+    ctx.save();
+    ctx.globalAlpha = 0.35;
+    ctx.strokeStyle = "rgba(255,255,255,0.08)";
+    ctx.lineWidth = 1;
+
+    const topLeft = screenToMm(0,0);
+    const botRight = screenToMm(w,h);
+
+    const x0 = Math.floor(topLeft.x / stepMm) * stepMm;
+    const x1 = Math.ceil(botRight.x / stepMm) * stepMm;
+    const y0 = Math.floor(botRight.y / stepMm) * stepMm;
+    const y1 = Math.ceil(topLeft.y / stepMm) * stepMm;
+
+    for (let x = x0; x <= x1; x += stepMm) {
+      const p = mmToScreen(x, 0);
+      ctx.beginPath();
+      ctx.moveTo(p.sx, 0);
+      ctx.lineTo(p.sx, h);
+      ctx.stroke();
+    }
+    for (let y = y0; y <= y1; y += stepMm) {
+      const p = mmToScreen(0, y);
+      ctx.beginPath();
+      ctx.moveTo(0, p.sy);
+      ctx.lineTo(w, p.sy);
+      ctx.stroke();
+    }
+
+    ctx.globalAlpha = 0.65;
+    ctx.strokeStyle = "rgba(125,211,252,0.20)";
+    {
+      const p = mmToScreen(0,0);
+      ctx.beginPath(); ctx.moveTo(p.sx, 0); ctx.lineTo(p.sx, h); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, p.sy); ctx.lineTo(w, p.sy); ctx.stroke();
+    }
+
+    ctx.restore();
+  }
+
+  function drawBoardsOutline() {
+    const dia = 100;
+    for (let b = 0; b < BOARDS; b++) {
+      const bd = boards[b];
+      const c = mmToScreen(bd.cx, bd.cy);
+
+      ctx.save();
+      ctx.globalAlpha = (b === selectedBoard) ? 0.95 : 0.55;
+      ctx.lineWidth = (b === selectedBoard) ? 2.0 : 1.0;
+      ctx.strokeStyle = (b === selectedBoard) ? "rgba(125,211,252,0.45)" : "rgba(255,255,255,0.10)";
+
+      ctx.beginPath();
+      ctx.arc(c.sx, c.sy, (dia/2)*view.scale, 0, Math.PI*2);
+      ctx.stroke();
+
+      const th = deg2rad(bd.rotDeg);
+      const hx = bd.cx + Math.cos(th) * (dia/2);
+      const hy = bd.cy + Math.sin(th) * (dia/2);
+      const hsp = mmToScreen(hx, hy);
+
+      ctx.strokeStyle = (b === selectedBoard) ? "rgba(167,139,250,0.55)" : "rgba(255,255,255,0.12)";
+      ctx.beginPath();
+      ctx.moveTo(c.sx, c.sy);
+      ctx.lineTo(hsp.sx, hsp.sy);
+      ctx.stroke();
+
+      ctx.fillStyle = (b === selectedBoard) ? "rgba(233,239,250,.9)" : "rgba(233,239,250,.55)";
+      ctx.font = "12px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
+      ctx.fillText(`b${b}`, c.sx + 8, c.sy - 10);
+
+      ctx.restore();
+    }
+  }
+
+  function drawRings() {
+    if (!showRings.checked) return;
+    const rings = [92, 34, 18];
+    for (let b = 0; b < BOARDS; b++) {
+      const bd = boards[b];
+      const c = mmToScreen(bd.cx, bd.cy);
+
+      ctx.save();
+      ctx.globalAlpha = (b === selectedBoard) ? 0.42 : 0.24;
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = "rgba(255,255,255,0.10)";
+      for (const d of rings) {
+        ctx.beginPath();
+        ctx.arc(c.sx, c.sy, (d/2)*view.scale, 0, Math.PI*2);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+  }
+
+  function drawOriginMarker() {
+    if (!showOrigin.checked) return;
+    const p = mmToScreen(origin.x, origin.y);
+
+    ctx.save();
+    ctx.globalAlpha = 0.9;
+
+    // 十字
+    ctx.strokeStyle = "rgba(125,211,252,0.65)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(p.sx - 10, p.sy);
+    ctx.lineTo(p.sx + 10, p.sy);
+    ctx.moveTo(p.sx, p.sy - 10);
+    ctx.lineTo(p.sx, p.sy + 10);
+    ctx.stroke();
+
+    // 円
+    ctx.strokeStyle = "rgba(167,139,250,0.45)";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(p.sx, p.sy, 10, 0, Math.PI*2);
+    ctx.stroke();
+
+    ctx.fillStyle = "rgba(233,239,250,.85)";
+    ctx.font = "11px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
+    ctx.fillText("origin", p.sx + 14, p.sy - 12);
+
+    ctx.restore();
+  }
+
+  function drawLEDs(rgb) {
+    for (let gi = 0; gi < TOTAL; gi++) {
+      const r = rgb[gi*3+0], g = rgb[gi*3+1], b = rgb[gi*3+2];
+      const p = mmToScreen(worldX[gi], worldY[gi]);
+
+      ctx.save();
+      ctx.globalAlpha = 0.22;
+      ctx.fillStyle = `rgb(${r},${g},${b})`;
+      ctx.beginPath();
+      ctx.arc(p.sx, p.sy, 9, 0, Math.PI*2);
+      ctx.fill();
+
+      ctx.globalAlpha = 0.98;
+      ctx.beginPath();
+      ctx.arc(p.sx, p.sy, 3.6, 0, Math.PI*2);
+      ctx.fill();
+      ctx.restore();
+
+      if (showIndex.checked) {
+        ctx.save();
+        ctx.fillStyle = "rgba(233,239,250,.45)";
+        ctx.font = "10px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
+        ctx.fillText(String(worldI[gi]), p.sx + 5, p.sy + 3);
+        ctx.restore();
+      }
+    }
+  }
+
+  // =========================================================
+  // 17) ループ
+  // =========================================================
+  const frameBuf = new Uint8Array(FRAME_LEN);
+
+  function start() {
+    if (!writer) return;
+    running = true;
+    btnStart.disabled = true;
+    btnStop.disabled = false;
+    setStatus("running", `fps: ${fps.value}  seq: ${String(seq).padStart(4,"0")}`);
+    lastTick = 0;
+    rafId = requestAnimationFrame(loop);
+  }
+
+  function stop() {
+    running = false;
+    btnStart.disabled = !writer;
+    btnStop.disabled = true;
+    setStatus(writer ? "connected" : "idle",
+      `fps: ${writer ? fps.value : "--"}  seq: ${writer ? String(seq).padStart(4,"0") : "----"}`);
+    if (rafId) cancelAnimationFrame(rafId);
+    rafId = null;
+  }
 
   btnStart.addEventListener("click", start);
   btnStop.addEventListener("click", stop);
+
+  function loop(ts) {
+    const targetFps = Math.max(10, Math.min(60, Number(fps.value) || 30));
+    const interval = 1000 / targetFps;
+
+    if (!lastTick) lastTick = ts;
+    const doFrame = (ts - lastTick >= interval);
+
+    const drawInterval = 1000 / 30;
+    const doDraw = (!lastDraw || (ts - lastDraw >= drawInterval));
+
+    let frame = null;
+
+    // ---- フレーム生成（Effects） ----
+    if (doFrame && running) {
+      lastTick = ts;
+      frame = Effects.renderFrame(performance.now() / 1000, frameBuf);
+      applyGainGamma(frame);
+      sendFrame(frame);
+
+      statusSub.textContent = `fps: ${targetFps}  seq: ${String(seq).padStart(4,"0")}`;
+    }
+
+    // ---- 描画 ----
+    if (doDraw) {
+      lastDraw = ts;
+      drawBackground();
+      drawGrid();
+      drawBoardsOutline();
+      drawRings();
+      drawOriginMarker();
+
+      // idle時も見た目が動くように（送信とは独立）
+      const rgb = frame || Effects.renderFrame(performance.now() / 1000, frameBuf);
+      // idle描画はガンマ適用しないほうが見やすいこともあるが、統一のため適用
+      // ※送信と同じ見た目にしたいなら、ここも applyGainGamma を入れる
+      const tmp = new Uint8Array(rgb); // 描画用コピー（送信と独立化したいので）
+      applyGainGamma(tmp);
+
+      drawLEDs(tmp);
+    }
+
+    rafId = requestAnimationFrame(loop);
+  }
+
+  // idleでも描画スタート
+  rafId = requestAnimationFrame(loop);
 
 })();
 </script>
