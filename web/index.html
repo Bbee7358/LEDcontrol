@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>WebSerial LED Sim (48) -> Pico</title>
+  <style>
+    html, body { margin:0; height:100%; background:#0b0f14; color:#e8eef7; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    #ui { position: fixed; top: 12px; left: 12px; z-index: 10; display:flex; gap:10px; align-items:center; flex-wrap: wrap;
+      background: rgba(20, 28, 40, 0.92); border: 1px solid rgba(255,255,255,0.10); border-radius: 12px; padding: 12px; }
+    button { padding:10px 14px; border-radius:10px; border:1px solid rgba(255,255,255,0.16); background: rgba(255,255,255,0.06); color:#e8eef7; cursor:pointer; }
+    button:disabled { opacity:.45; cursor:not-allowed; }
+    #status { font-size: 13px; opacity:.9; }
+    canvas { display:block; width:100vw; height:100vh; }
+  </style>
+</head>
+<body>
+  <div id="ui">
+    <button id="btnConnect">Connect</button>
+    <button id="btnDisconnect" disabled>Disconnect</button>
+    <button id="btnStart" disabled>Start</button>
+    <button id="btnStop" disabled>Stop</button>
+    <span id="status">idle</span>
+  </div>
+  <canvas id="c"></canvas>
+
+<script>
+(() => {
+  const NUM_LEDS = 192; // 最小構成：1基板=48
+  const FRAME_LEN = NUM_LEDS * 3;
+
+  const canvas = document.getElementById("c");
+  const ctx = canvas.getContext("2d", { alpha: false });
+
+  const btnConnect = document.getElementById("btnConnect");
+  const btnDisconnect = document.getElementById("btnDisconnect");
+  const btnStart = document.getElementById("btnStart");
+  const btnStop = document.getElementById("btnStop");
+  const statusEl = document.getElementById("status");
+
+  let port = null;
+  let writer = null;
+  let running = false;
+  let rafId = null;
+
+  // 48点を円状に配置（最小シミュ）
+  const ledPos = [];
+  function rebuildLayout() {
+    ledPos.length = 0;
+    const w = canvas.width, h = canvas.height;
+    const cx = w * 0.5, cy = h * 0.5;
+    const r = Math.min(w, h) * 0.28;
+    for (let i = 0; i < NUM_LEDS; i++) {
+      const a = (i / NUM_LEDS) * Math.PI * 2;
+      ledPos.push({ x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r });
+    }
+  }
+
+  function resize() {
+    const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    canvas.width = Math.floor(window.innerWidth * dpr);
+    canvas.height = Math.floor(window.innerHeight * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    rebuildLayout();
+  }
+  window.addEventListener("resize", resize);
+  resize();
+
+  function setStatus(s) { statusEl.textContent = s; }
+
+  function clamp255(v) { return v < 0 ? 0 : v > 255 ? 255 : v|0; }
+
+  // エフェクト：回る1点＋残光（最小）
+  function makeFrame(tSec) {
+    const rgb = new Uint8Array(FRAME_LEN);
+
+    // デフォルト：薄赤（20/255）をベースに
+    for (let i = 0; i < NUM_LEDS; i++) {
+      rgb[i*3+0] = 20; // R
+      rgb[i*3+1] = 0;  // G
+      rgb[i*3+2] = 0;  // B
+    }
+
+    const head = Math.floor((tSec * 10) % NUM_LEDS);
+    for (let k = 0; k < 10; k++) {
+      const idx = (head - k + NUM_LEDS) % NUM_LEDS;
+      const a = Math.exp(-k * 0.35);        // 残光
+      rgb[idx*3+0] = clamp255(20 + 120*a);  // R
+      rgb[idx*3+1] = clamp255(40*a);        // G
+      rgb[idx*3+2] = clamp255(160*a);       // B
+    }
+    return rgb;
+  }
+
+  function drawSim(rgb) {
+    const w = window.innerWidth, h = window.innerHeight;
+    ctx.clearRect(0, 0, w, h);
+
+    // 背景
+    ctx.fillStyle = "#0b0f14";
+    ctx.fillRect(0, 0, w, h);
+
+    // LED描画
+    for (let i = 0; i < NUM_LEDS; i++) {
+      const r = rgb[i*3+0], g = rgb[i*3+1], b = rgb[i*3+2];
+      const p = ledPos[i];
+
+      ctx.beginPath();
+      ctx.fillStyle = `rgb(${r},${g},${b})`;
+      ctx.arc(p.x, p.y, 7, 0, Math.PI*2);
+      ctx.fill();
+    }
+  }
+
+  async function sendFrame(rgb) {
+    if (!writer) return;
+    // "NP" + len(u16 LE) + payload
+    const packet = new Uint8Array(2 + 2 + rgb.length);
+    packet[0] = "N".charCodeAt(0);
+    packet[1] = "P".charCodeAt(0);
+    packet[2] = rgb.length & 0xff;
+    packet[3] = (rgb.length >> 8) & 0xff;
+    packet.set(rgb, 4);
+
+    await writer.write(packet);
+  }
+
+  function loop() {
+    if (!running) return;
+    const tSec = performance.now() / 1000;
+    const frame = makeFrame(tSec);
+    drawSim(frame);
+
+    // 送信（詰まりにくいように await しすぎない設計にするならキュー化するが、最小構成なので直列）
+    sendFrame(frame).catch(err => {
+      console.error(err);
+      setStatus("send error");
+      stop();
+    });
+
+    rafId = requestAnimationFrame(loop);
+  }
+
+  function start() {
+    if (!writer) return;
+    running = true;
+    btnStart.disabled = true;
+    btnStop.disabled = false;
+    setStatus("running");
+    loop();
+  }
+
+  function stop() {
+    running = false;
+    btnStart.disabled = !writer;
+    btnStop.disabled = true;
+    setStatus(writer ? "connected" : "idle");
+    if (rafId) cancelAnimationFrame(rafId);
+    rafId = null;
+  }
+
+  btnConnect.addEventListener("click", async () => {
+    try {
+      if (!("serial" in navigator)) {
+        alert("WebSerial未対応です。Chrome系で開いてください。");
+        return;
+      }
+      port = await navigator.serial.requestPort();
+      await port.open({ baudRate: 115200 });
+
+      writer = port.writable.getWriter();
+
+      btnConnect.disabled = true;
+      btnDisconnect.disabled = false;
+      btnStart.disabled = false;
+      btnStop.disabled = true;
+
+      setStatus("connected");
+    } catch (e) {
+      console.error(e);
+      setStatus("connect failed");
+      port = null;
+      writer = null;
+    }
+  });
+
+  btnDisconnect.addEventListener("click", async () => {
+    try {
+      stop();
+      if (writer) {
+        writer.releaseLock();
+        writer = null;
+      }
+      if (port) {
+        await port.close();
+        port = null;
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      btnConnect.disabled = false;
+      btnDisconnect.disabled = true;
+      btnStart.disabled = true;
+      btnStop.disabled = true;
+      setStatus("idle");
+    }
+  });
+
+  btnStart.addEventListener("click", start);
+  btnStop.addEventListener("click", stop);
+
+})();
+</script>
+</body>
+</html>
