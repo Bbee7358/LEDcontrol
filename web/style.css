@@ -25,6 +25,32 @@ html, body {
 }
 canvas { display:block; width:100vw; height:100vh; }
 
+/* Camera overlay */
+#camOverlay{
+  position: fixed;
+  right: 14px;
+  bottom: 86px;
+  width: 280px;
+  padding: 10px;
+  border-radius: 16px;
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(0,0,0,.28);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--shadow);
+  z-index: 14;
+}
+#camOverlay video{
+  width: 100%;
+  border-radius: 12px;
+  display: none; /* デバッグ時はcanvasで十分 */
+}
+#camOverlay canvas{
+  width: 100%;
+  height: auto;
+  border-radius: 12px;
+  display: block;
+}
+
 /* Top bar */
 #topbar{
   position: fixed; left: 14px; right: 14px; top: 14px;

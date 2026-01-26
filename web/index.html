@@ -85,6 +85,29 @@
         </div>
       </div>
 
+      <div class="row" style="margin-top:10px;">
+        <div class="toggle">
+          <input id="lookOn" type="checkbox" />
+          <label for="lookOn" style="cursor:pointer;">カラー強調（任意）</label>
+        </div>
+      </div>
+
+      <div class="row">
+        <label>Hue</label>
+        <div class="ctl">
+          <input id="lookHue" type="range" min="-180" max="180" value="0" />
+          <span class="mono" id="lookHueVal">0</span>
+        </div>
+      </div>
+
+      <div class="row">
+        <label>Saturation</label>
+        <div class="ctl">
+          <input id="lookSat" type="range" min="0" max="2" step="0.01" value="1" />
+          <span class="mono" id="lookSatVal">1.00</span>
+        </div>
+      </div>
+
       <div class="mini">
         送信が詰まった場合は遅延を溜めずにフレームをスキップし、リアルタイム性を優先します。
       </div>
@@ -126,6 +149,84 @@
       <div class="mini">
         原点は「ワールド(mm)座標」です。<br/>
         m押下中は原点がマウス追従しますが、更新は「一定間隔」でサンプルして行います（波などの時間依存FXが破綻しにくい）。
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="head">
+        <div class="h">カメラトラッキング</div>
+        <div class="hint">人（動き）→origin</div>
+      </div>
+
+      <div class="split">
+        <button id="btnCamStart" class="primary">Start Camera</button>
+        <button id="btnCamStop" class="danger" disabled>Stop Camera</button>
+      </div>
+
+      <div class="row" style="margin-top:10px;">
+        <div class="toggle">
+          <input id="trackEnable" type="checkbox" />
+          <label for="trackEnable" style="cursor:pointer;">originを追従</label>
+        </div>
+        <div class="toggle">
+          <input id="panelLight" type="checkbox" checked />
+          <label for="panelLight" style="cursor:pointer;">該当パネル点灯</label>
+        </div>
+        <div class="toggle">
+          <input id="trackDebug" type="checkbox" />
+          <label for="trackDebug" style="cursor:pointer;">デバッグ表示</label>
+        </div>
+      </div>
+
+      <div class="row">
+        <label>追従（スムージング）</label>
+        <div class="ctl">
+          <input id="trackSmooth" type="range" min="0" max="1" step="0.01" value="0.25" />
+          <span class="mono" id="trackSmoothVal">0.25</span>
+        </div>
+      </div>
+
+      <div class="row">
+        <label>感度（動き検出）</label>
+        <div class="ctl">
+          <input id="trackSens" type="range" min="0" max="1" step="0.01" value="0.55" />
+          <span class="mono" id="trackSensVal">0.55</span>
+        </div>
+      </div>
+
+      <div class="grid" style="margin-top:10px;">
+        <div>
+          <label>X min（mm）</label>
+          <input id="trackXMin" type="number" value="-630" step="1" />
+        </div>
+        <div>
+          <label>X max（mm）</label>
+          <input id="trackXMax" type="number" value="630" step="1" />
+        </div>
+        <div>
+          <label>Y min（mm）</label>
+          <input id="trackYMin" type="number" value="-350" step="1" />
+        </div>
+        <div>
+          <label>Y max（mm）</label>
+          <input id="trackYMax" type="number" value="350" step="1" />
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:10px;">
+        <div class="toggle">
+          <input id="trackMirrorX" type="checkbox" checked />
+          <label for="trackMirrorX" style="cursor:pointer;">左右ミラー</label>
+        </div>
+        <div class="toggle">
+          <input id="trackInvertY" type="checkbox" checked />
+          <label for="trackInvertY" style="cursor:pointer;">上下反転</label>
+        </div>
+      </div>
+
+      <div class="mini">
+        現段階は「人検出」ではなく「動きの重心」を追跡します（照明/背景で調整が必要）。<br/>
+        初めて動きを検出した瞬間に、その位置から波紋レイヤー（Ripple）が広がります。
       </div>
     </div>
 
@@ -256,12 +357,17 @@
       <span class="mono">payload: RGB * 480</span>
     </div>
     <div class="right">
+      <span class="mono" id="trackInfo">track: off</span>
       <span class="mono" id="mouseInfo">x: -- mm / y: -- mm</span>
       <span class="mono" id="dropInfo">drops: 0</span>
     </div>
   </div>
 
   <canvas id="c"></canvas>
+  <div id="camOverlay" hidden>
+    <video id="camVideo" autoplay playsinline muted></video>
+    <canvas id="camDebugCanvas" width="320" height="240"></canvas>
+  </div>
 
   <script type="module" src="./app.js"></script>
 </body>

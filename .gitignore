@@ -5,4 +5,5 @@
 .vscode/ipch
 web/node_modules
 web/dist
+web/public/onnxruntime
 .DS_Store

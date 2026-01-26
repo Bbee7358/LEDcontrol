@@ -1,4 +1,5 @@
 import { loadEffects } from "./fx/loader.js";
+import { MotionTracker } from "./tracking/motionTracker.js";
 
 (async () => {
   // =========================================================
@@ -40,6 +41,11 @@ import { loadEffects } from "./fx/loader.js";
   const gainVal = document.getElementById("gainVal");
   const gamma = document.getElementById("gamma");
   const gammaVal = document.getElementById("gammaVal");
+  const lookOn = document.getElementById("lookOn");
+  const lookHue = document.getElementById("lookHue");
+  const lookHueVal = document.getElementById("lookHueVal");
+  const lookSat = document.getElementById("lookSat");
+  const lookSatVal = document.getElementById("lookSatVal");
 
   const snapOn = document.getElementById("snapOn");
   const snapMm = document.getElementById("snapMm");
@@ -67,8 +73,25 @@ import { loadEffects } from "./fx/loader.js";
   const btnOriginToSelected = document.getElementById("btnOriginToSelected");
   const btnOriginZero = document.getElementById("btnOriginZero");
 
+  const btnCamStart = document.getElementById("btnCamStart");
+  const btnCamStop = document.getElementById("btnCamStop");
+  const trackEnable = document.getElementById("trackEnable");
+  const panelLight = document.getElementById("panelLight");
+  const trackDebug = document.getElementById("trackDebug");
+  const trackSmooth = document.getElementById("trackSmooth");
+  const trackSmoothVal = document.getElementById("trackSmoothVal");
+  const trackSens = document.getElementById("trackSens");
+  const trackSensVal = document.getElementById("trackSensVal");
+  const trackXMin = document.getElementById("trackXMin");
+  const trackXMax = document.getElementById("trackXMax");
+  const trackYMin = document.getElementById("trackYMin");
+  const trackYMax = document.getElementById("trackYMax");
+  const trackMirrorX = document.getElementById("trackMirrorX");
+  const trackInvertY = document.getElementById("trackInvertY");
+
   const selInfo = document.getElementById("selInfo");
   const originInfo = document.getElementById("originInfo");
+  const trackInfo = document.getElementById("trackInfo");
   const mouseInfo = document.getElementById("mouseInfo");
   const dropInfo = document.getElementById("dropInfo");
   const mInfo = document.getElementById("mInfo");
@@ -83,6 +106,7 @@ import { loadEffects } from "./fx/loader.js";
   // =========================================================
   function clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
   function isFiniteNumber(n){ return Number.isFinite(n); }
+  const lerp = (a, b, t) => a + (b - a) * t;
 
   function attachEnterToCommit(inputEl, commitFn) {
     inputEl.addEventListener("keydown", (e) => {
@@ -133,6 +157,96 @@ import { loadEffects } from "./fx/loader.js";
   let drops = 0;
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // =========================================================
+  // 2.5) Camera Tracking（動きの重心）
+  // =========================================================
+  const camOverlay = document.getElementById("camOverlay");
+  const camVideo = document.getElementById("camVideo");
+  const camDebugCanvas = document.getElementById("camDebugCanvas");
+
+  let motionTracker = null;
+  let lastTrackSec = 0;
+  let trackPresent = false;
+  let trackHold = { x: 0, y: 0, has: false };
+  let trackBoardId = null;
+  let trackBoardYN = 0.5;
+  let trackBoardConf = 0;
+
+  const trackMap = {
+    xMin: Number(trackXMin.value) || -630,
+    xMax: Number(trackXMax.value) || 630,
+    yMin: Number(trackYMin.value) || -350,
+    yMax: Number(trackYMax.value) || 350,
+  };
+
+  function syncTrackMapFromUI() {
+    trackMap.xMin = Number(trackXMin.value) || trackMap.xMin;
+    trackMap.xMax = Number(trackXMax.value) || trackMap.xMax;
+    trackMap.yMin = Number(trackYMin.value) || trackMap.yMin;
+    trackMap.yMax = Number(trackYMax.value) || trackMap.yMax;
+  }
+
+  function commitTrackMapInput(inputEl, key) {
+    commitNumberInput(
+      inputEl,
+      () => trackMap[key],
+      (v) => { trackMap[key] = v; },
+      { allowEmptyToZero: false, post: () => { syncTrackMapFromUI(); } }
+    );
+  }
+
+  trackXMin.addEventListener("change", () => commitTrackMapInput(trackXMin, "xMin"));
+  trackXMax.addEventListener("change", () => commitTrackMapInput(trackXMax, "xMax"));
+  trackYMin.addEventListener("change", () => commitTrackMapInput(trackYMin, "yMin"));
+  trackYMax.addEventListener("change", () => commitTrackMapInput(trackYMax, "yMax"));
+  attachEnterToCommit(trackXMin, () => commitTrackMapInput(trackXMin, "xMin"));
+  attachEnterToCommit(trackXMax, () => commitTrackMapInput(trackXMax, "xMax"));
+  attachEnterToCommit(trackYMin, () => commitTrackMapInput(trackYMin, "yMin"));
+  attachEnterToCommit(trackYMax, () => commitTrackMapInput(trackYMax, "yMax"));
+
+  function setCamOverlayVisible(on) {
+    if (camOverlay) camOverlay.hidden = !on;
+  }
+  setCamOverlayVisible(false);
+
+  async function startCamera() {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      alert("このブラウザではカメラが使えません。");
+      return;
+    }
+    try {
+      if (!motionTracker) motionTracker = new MotionTracker({ width: 160, height: 120, debugCanvas: camDebugCanvas });
+      await motionTracker.start(camVideo, { facingMode: "user" });
+      btnCamStart.disabled = true;
+      btnCamStop.disabled = false;
+      setCamOverlayVisible(trackDebug.checked);
+      trackInfo.textContent = "track: camera on";
+      trackHold.has = false;
+      trackPresent = false;
+      lastTrackSec = 0;
+    } catch (e) {
+      console.error(e);
+      trackInfo.textContent = "track: camera failed";
+    }
+  }
+
+  function stopCamera() {
+    if (motionTracker) motionTracker.stop();
+    btnCamStart.disabled = false;
+    btnCamStop.disabled = true;
+    setCamOverlayVisible(false);
+    trackInfo.textContent = "track: off";
+    trackHold.has = false;
+    trackPresent = false;
+    lastTrackSec = 0;
+  }
+
+  btnCamStart.addEventListener("click", startCamera);
+  btnCamStop.addEventListener("click", stopCamera);
+  trackDebug.addEventListener("change", () => {
+    setCamOverlayVisible(trackDebug.checked && !!(motionTracker && motionTracker.running));
+  });
 
   // OS側の接続/切断イベント（ケーブル抜け・デバイス消失など）を拾う
   if ("serial" in navigator) {
@@ -421,6 +535,7 @@ import { loadEffects } from "./fx/loader.js";
   }
   setStatus("idle", "fps: --  seq: ----");
   mInfo.textContent = "m: off";
+  trackInfo.textContent = "track: off";
 
   function clamp255(v){ return v < 0 ? 0 : v > 255 ? 255 : (v|0); }
 
@@ -438,6 +553,16 @@ import { loadEffects } from "./fx/loader.js";
   fps.addEventListener("input", () => fpsVal.textContent = fps.value);
   gain.addEventListener("input", () => gainVal.textContent = Number(gain.value).toFixed(2));
   gamma.addEventListener("input", () => { gammaVal.textContent = Number(gamma.value).toFixed(2); rebuildGammaLUT(); });
+
+  lookHueVal.textContent = String(lookHue.value);
+  lookSatVal.textContent = Number(lookSat.value).toFixed(2);
+  trackSmoothVal.textContent = Number(trackSmooth.value).toFixed(2);
+  trackSensVal.textContent = Number(trackSens.value).toFixed(2);
+
+  lookHue.addEventListener("input", () => { lookHueVal.textContent = String(lookHue.value); });
+  lookSat.addEventListener("input", () => { lookSatVal.textContent = Number(lookSat.value).toFixed(2); });
+  trackSmooth.addEventListener("input", () => { trackSmoothVal.textContent = Number(trackSmooth.value).toFixed(2); });
+  trackSens.addEventListener("input", () => { trackSensVal.textContent = Number(trackSens.value).toFixed(2); });
 
   function commitMm2px() {
     commitNumberInput(mm2px, () => view.scale, (v) => { setZoom(v); }, { allowEmptyToZero: false });
@@ -573,6 +698,33 @@ import { loadEffects } from "./fx/loader.js";
         lastT: 0,
         originX: origin.x,
         originY: origin.y,
+        timeBase: "abs",
+      });
+
+      if (layers.length > LAYER_MAX) layers.splice(0, layers.length - LAYER_MAX);
+    }
+
+    function spawnLayer(fxId, params, originX, originY, { nowSec = null, timeBase = "rel" } = {}) {
+      const fx = FX_REGISTRY[fxId];
+      if (!fx) return;
+
+      const p = params ? { ...params } : buildDefaultParams(fxId);
+      if ("baseR" in p) p.baseR = 0;
+
+      const st = {};
+      if (fx.init) fx.init(st, p);
+
+      const t0 = (nowSec != null) ? nowSec : (performance.now() / 1000);
+
+      layers.push({
+        id: fxId,
+        params: p,
+        state: st,
+        born: t0,
+        lastT: 0,
+        originX,
+        originY,
+        timeBase: (timeBase === "abs") ? "abs" : "rel",
       });
 
       if (layers.length > LAYER_MAX) layers.splice(0, layers.length - LAYER_MAX);
@@ -614,7 +766,8 @@ import { loadEffects } from "./fx/loader.js";
         const dt = L.lastT ? (nowSec - L.lastT) : (1/60);
         L.lastT = nowSec;
 
-        const ctxObj = { t: nowSec, dt, originX: L.originX, originY: L.originY };
+        const lt = (L.timeBase === "rel") ? age : nowSec;
+        const ctxObj = { t: lt, dt, originX: L.originX, originY: L.originY };
 
         tmpLayer.fill(0);
         const fx = FX_REGISTRY[L.id];
@@ -646,6 +799,7 @@ import { loadEffects } from "./fx/loader.js";
       getActiveParams,
       onOriginChanged,
       spawnLayerFromCurrent,
+      spawnLayer,
     };
   })();
 
@@ -1096,6 +1250,101 @@ import { loadEffects } from "./fx/loader.js";
     for (let i = 0; i < rgb.length; i++) rgb[i] = gammaLUT[rgb[i]];
   }
 
+  function applyLook(rgb) {
+    if (!lookOn.checked) return;
+
+    const hueDeg = Number(lookHue.value) || 0;
+    const sat = Math.max(0, Number(lookSat.value) || 1);
+    if (hueDeg === 0 && sat === 1) return;
+
+    const a = (hueDeg * Math.PI) / 180;
+    const ca = Math.cos(a);
+    const sa = Math.sin(a);
+
+    for (let i = 0; i < rgb.length; i += 3) {
+      const r = rgb[i + 0];
+      const g = rgb[i + 1];
+      const b = rgb[i + 2];
+
+      // RGB -> YIQ
+      const y = 0.299 * r + 0.587 * g + 0.114 * b;
+      const I = 0.596 * r - 0.274 * g - 0.322 * b;
+      const Q = 0.211 * r - 0.523 * g + 0.312 * b;
+
+      // hue rotate + saturation
+      const I2 = (I * ca - Q * sa) * sat;
+      const Q2 = (I * sa + Q * ca) * sat;
+
+      // YIQ -> RGB
+      const rr = y + 0.956 * I2 + 0.621 * Q2;
+      const gg = y - 0.272 * I2 - 0.647 * Q2;
+      const bb = y - 1.106 * I2 + 1.703 * Q2;
+
+      rgb[i + 0] = clamp255(Math.round(rr));
+      rgb[i + 1] = clamp255(Math.round(gg));
+      rgb[i + 2] = clamp255(Math.round(bb));
+    }
+  }
+
+  function applyBoardPanelGlow(rgb, boardId, tNowSec, { strength = 1.0, yNorm = 0.5 } = {}) {
+    if (boardId == null) return;
+    if (!(boardId >= 0 && boardId < BOARDS)) return;
+    if (!panelLight.checked) return;
+
+    const s = Math.max(0, Math.min(1, strength));
+    if (s <= 0) return;
+
+    // ほんの少しyで色相をずらす（上=寒色、下=暖色寄り）
+    const yk = Math.max(0, Math.min(1, yNorm));
+    const hue = (0.62 + 0.16 * (0.5 - yk) + 0.06 * Math.sin(tNowSec * 0.7 + boardId * 0.9));
+    const sat = 0.95;
+
+    const hsvToRgb = (h, ss, v) => {
+      h = ((h % 1) + 1) % 1;
+      const i = Math.floor(h * 6);
+      const f = h * 6 - i;
+      const p = v * (1 - ss);
+      const q = v * (1 - f * ss);
+      const t = v * (1 - (1 - f) * ss);
+      let r, g, b;
+      switch (i % 6) {
+        case 0: r = v; g = t; b = p; break;
+        case 1: r = q; g = v; b = p; break;
+        case 2: r = p; g = v; b = t; break;
+        case 3: r = p; g = q; b = v; break;
+        case 4: r = t; g = p; b = v; break;
+        default: r = v; g = p; b = q; break;
+      }
+      return [r * 255, g * 255, b * 255];
+    };
+
+    // ベース色（2色を時間でミックスして“豪華”感）
+    const mix = 0.5 + 0.5 * Math.sin(tNowSec * 0.9 + boardId * 0.4);
+    const c1 = hsvToRgb(hue, sat, 1.0);
+    const c2 = hsvToRgb(hue + 0.18, sat, 1.0);
+    const baseR = c1[0] * (1 - mix) + c2[0] * mix;
+    const baseG = c1[1] * (1 - mix) + c2[1] * mix;
+    const baseB = c1[2] * (1 - mix) + c2[2] * mix;
+
+    for (let gi = 0; gi < TOTAL; gi++) {
+      if (worldB[gi] !== boardId) continue;
+
+      const li = worldI[gi] | 0;
+      const ringW = (li < 30) ? 0.62 : (li < 42) ? 0.82 : 1.0;
+
+      const pulse = 0.65 + 0.35 * Math.sin(tNowSec * 6.0 - li * 0.22);
+      const sparkleGate = Math.sin(li * 12.9898 + tNowSec * 8.0 + boardId * 1.7);
+      const sparkle = sparkleGate > 0.985 ? 1.0 : 0.0;
+
+      const v = (0.35 + 0.65 * pulse) * ringW * (1 + 0.65 * sparkle) * (0.75 + 0.25 * s);
+
+      const k = gi * 3;
+      rgb[k + 0] = clamp255(rgb[k + 0] + baseR * v * s);
+      rgb[k + 1] = clamp255(rgb[k + 1] + baseG * v * s);
+      rgb[k + 2] = clamp255(rgb[k + 2] + baseB * v * s);
+    }
+  }
+
   // =========================================================
   // 16) 描画
   // =========================================================
@@ -1311,6 +1560,89 @@ import { loadEffects } from "./fx/loader.js";
     Effects.spawnLayerFromCurrent(tNowSec);
   }
 
+  function updateTracking(tNowSec) {
+    if (!motionTracker || !motionTracker.running) return;
+
+    const TRACK_FPS = 15;
+    if (tNowSec - lastTrackSec < 1 / TRACK_FPS) return;
+    lastTrackSec = tNowSec;
+
+    syncTrackMapFromUI();
+
+    const sens = Math.max(0, Math.min(1, Number(trackSens.value) || 0.55));
+    const diffThreshold = Math.round(lerp(30, 10, sens));
+    const minArea = Math.round(lerp(1600, 420, sens));
+
+    const res = motionTracker.processFrame({ diffThreshold, minArea });
+
+    let present = !!res.present;
+    let x = res.xNorm, y = res.yNorm;
+    if (trackMirrorX.checked) x = 1 - x;
+    if (trackInvertY.checked) y = 1 - y;
+
+    const mmX = lerp(trackMap.xMin, trackMap.xMax, x);
+    const mmY = lerp(trackMap.yMin, trackMap.yMax, y);
+
+    // 相対位置に最も近いパネル（board）を推定
+    let boardId = 0;
+    {
+      let best = 0;
+      let bestD = Infinity;
+      for (let b = 0; b < BOARDS; b++) {
+        const dx = mmX - boards[b].cx;
+        const dy = mmY - boards[b].cy;
+        const d = dx * dx + dy * dy;
+        if (d < bestD) { bestD = d; best = b; }
+      }
+      boardId = best;
+    }
+
+    if (present && !trackPresent) {
+      // 初回検出で波紋（Ripple）をレイヤーとして発火（t=0から開始）
+      Effects.spawnLayer(
+        "ripple",
+        { baseR: 0, speed: 260, period: 1.05, width: 0.10 },
+        mmX,
+        mmY,
+        { nowSec: tNowSec, timeBase: "rel" }
+      );
+    }
+    trackPresent = present;
+
+    if (present) {
+      trackBoardId = boardId;
+      trackBoardYN = y;
+      trackBoardConf = (res.confidence ?? 0.7);
+    } else {
+      trackBoardId = null;
+      trackBoardConf = 0;
+    }
+
+    if (present) {
+      const smooth = Math.max(0, Math.min(1, Number(trackSmooth.value) || 0.25));
+      if (!trackHold.has) {
+        trackHold.x = mmX; trackHold.y = mmY; trackHold.has = true;
+      } else {
+        trackHold.x = lerp(trackHold.x, mmX, smooth);
+        trackHold.y = lerp(trackHold.y, mmY, smooth);
+      }
+    } else {
+      trackHold.has = false;
+    }
+
+    if (trackEnable.checked && trackHold.has) {
+      // マウス追従とは排他（暴れ防止）
+      followOriginWithMouse = false;
+      mInfo.textContent = "m: off";
+      origin.x = trackHold.x;
+      origin.y = trackHold.y;
+      syncOriginUI();
+      Effects.onOriginChanged();
+    }
+
+    trackInfo.textContent = `track: ${present ? "on" : "idle"}  b:${boardId}  conf:${(res.confidence ?? 0).toFixed(2)}`;
+  }
+
   function loop(ts) {
     const targetFps = Math.max(10, Math.min(60, Number(fps.value) || 30));
     const interval = 1000 / targetFps;
@@ -1322,6 +1654,7 @@ import { loadEffects } from "./fx/loader.js";
     const doDraw = (!lastDraw || (ts - lastDraw >= drawInterval));
 
     const tNowSec = performance.now() / 1000;
+    updateTracking(tNowSec);
     maybeUpdateOriginFollow(tNowSec);
 
     let frame = null;
@@ -1329,6 +1662,8 @@ import { loadEffects } from "./fx/loader.js";
     if (doFrame && running) {
       lastTick = ts;
       frame = Effects.renderFrame(tNowSec, frameBuf);
+      if (trackBoardId != null) applyBoardPanelGlow(frame, trackBoardId, tNowSec, { strength: trackBoardConf, yNorm: trackBoardYN });
+      applyLook(frame);
       applyGainGamma(frame);
       sendFrame(frame);
 
@@ -1346,6 +1681,8 @@ import { loadEffects } from "./fx/loader.js";
       const rgb = frame || Effects.renderFrame(tNowSec, frameBuf);
 
       const tmp = new Uint8Array(rgb);
+      if (trackBoardId != null) applyBoardPanelGlow(tmp, trackBoardId, tNowSec, { strength: trackBoardConf, yNorm: trackBoardYN });
+      applyLook(tmp);
       applyGainGamma(tmp);
 
       drawLEDs(tmp);
