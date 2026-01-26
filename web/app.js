@@ -1,5 +1,6 @@
 import { loadEffects } from "./fx/loader.js";
 import { MotionTracker } from "./tracking/motionTracker.js";
+import { YoloPersonTracker } from "./tracking/yoloPersonTracker.js";
 
 (async () => {
   // =========================================================
@@ -166,6 +167,8 @@ import { MotionTracker } from "./tracking/motionTracker.js";
   const camDebugCanvas = document.getElementById("camDebugCanvas");
 
   let motionTracker = null;
+  let yoloTracker = null;
+  let yoloReady = false;
   let lastTrackSec = 0;
   let trackPresent = false;
   let trackHold = { x: 0, y: 0, has: false };
@@ -221,10 +224,32 @@ import { MotionTracker } from "./tracking/motionTracker.js";
       btnCamStart.disabled = true;
       btnCamStop.disabled = false;
       setCamOverlayVisible(trackDebug.checked);
-      trackInfo.textContent = "track: camera on";
+      trackInfo.textContent = "track: yolo loading...";
       trackHold.has = false;
       trackPresent = false;
       lastTrackSec = 0;
+
+      try {
+        if (!yoloTracker) yoloTracker = new YoloPersonTracker({ modelUrl: "./models/yolov8n.onnx", debugCanvas: camDebugCanvas });
+        await yoloTracker.load();
+        yoloTracker.reset();
+        yoloReady = true;
+        trackInfo.textContent = "track: yolo ready";
+      } catch (e) {
+        console.error(e);
+        yoloReady = false;
+        const errText = String(e?.message ?? e ?? "").toLowerCase();
+        if (
+          errText.includes("ort-wasm") ||
+          errText.includes("no available backend") ||
+          errText.includes("failed to fetch") ||
+          errText.includes("404")
+        ) {
+          trackInfo.textContent = "track: yolo failed (onnxruntime missing)";
+        } else {
+          trackInfo.textContent = "track: yolo failed (model?)";
+        }
+      }
     } catch (e) {
       console.error(e);
       trackInfo.textContent = "track: camera failed";
@@ -233,6 +258,8 @@ import { MotionTracker } from "./tracking/motionTracker.js";
 
   function stopCamera() {
     if (motionTracker) motionTracker.stop();
+    if (yoloTracker) yoloTracker.reset();
+    yoloReady = false;
     btnCamStart.disabled = false;
     btnCamStop.disabled = true;
     setCamOverlayVisible(false);
@@ -1570,10 +1597,20 @@ import { MotionTracker } from "./tracking/motionTracker.js";
     syncTrackMapFromUI();
 
     const sens = Math.max(0, Math.min(1, Number(trackSens.value) || 0.55));
-    const diffThreshold = Math.round(lerp(30, 10, sens));
-    const minArea = Math.round(lerp(1600, 420, sens));
 
-    const res = motionTracker.processFrame({ diffThreshold, minArea });
+    let res = { present: false, xNorm: 0.5, yNorm: 0.5, confidence: 0 };
+    let modeLabel = "motion";
+    if (yoloTracker && yoloReady) {
+      // sens: 0..1 -> minScore: 0.60..0.25（感度↑で閾値↓）
+      yoloTracker.minScore = lerp(0.60, 0.25, sens);
+      const smooth = Math.max(0, Math.min(1, Number(trackSmooth.value) || 0.25));
+      res = yoloTracker.tick(camVideo, tNowSec, { inferFps: 12, smooth });
+      modeLabel = "yolo";
+    } else {
+      const diffThreshold = Math.round(lerp(32, 12, sens));
+      const minArea = Math.round(lerp(1200, 280, sens));
+      res = motionTracker.processFrame({ diffThreshold, minArea });
+    }
 
     let present = !!res.present;
     let x = res.xNorm, y = res.yNorm;
@@ -1589,9 +1626,8 @@ import { MotionTracker } from "./tracking/motionTracker.js";
       let best = 0;
       let bestD = Infinity;
       for (let b = 0; b < BOARDS; b++) {
-        const dx = mmX - boards[b].cx;
-        const dy = mmY - boards[b].cy;
-        const d = dx * dx + dy * dy;
+        // 左右の順番を最優先（基本は横一列配置を想定）
+        const d = Math.abs(mmX - boards[b].cx);
         if (d < bestD) { bestD = d; best = b; }
       }
       boardId = best;
@@ -1640,7 +1676,7 @@ import { MotionTracker } from "./tracking/motionTracker.js";
       Effects.onOriginChanged();
     }
 
-    trackInfo.textContent = `track: ${present ? "on" : "idle"}  b:${boardId}  conf:${(res.confidence ?? 0).toFixed(2)}`;
+    trackInfo.textContent = `track: ${modeLabel} ${present ? "on" : "idle"}  b:${boardId}  conf:${(res.confidence ?? 0).toFixed(2)}`;
   }
 
   function loop(ts) {

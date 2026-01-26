@@ -4,12 +4,13 @@
   "type": "module",
   "scripts": {
     "postinstall": "node ./scripts/copy-ort-wasm.mjs",
+    "sync-ort": "node ./scripts/copy-ort-wasm.mjs",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview"
   },
   "dependencies": {
-    "onnxruntime-web": "^1.18.0"
+    "onnxruntime-web": "^1.23.2"
   },
   "devDependencies": {
     "vite": "^5.0.0"

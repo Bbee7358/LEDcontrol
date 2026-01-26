@@ -30,7 +30,7 @@ function nms(boxes, iouThr = 0.45, topK = 20) {
 
 export class YoloPersonTracker {
   constructor({
-    modelUrl = "/models/yolov8n.onnx",
+    modelUrl = "./models/yolov8n.onnx",
     inputSize = 640,
     minScore = 0.35,
     debugCanvas = null,
@@ -75,7 +75,8 @@ export class YoloPersonTracker {
     ort.env.wasm.wasmPaths = new URL("./onnxruntime/", window.location.href).toString();
     ort.env.wasm.numThreads = 1;
 
-    this.session = await ort.InferenceSession.create(this.modelUrl, {
+    const modelAbsUrl = new URL(this.modelUrl, window.location.href).toString();
+    this.session = await ort.InferenceSession.create(modelAbsUrl, {
       executionProviders: ["wasm"],
       graphOptimizationLevel: "all",
     });
@@ -135,51 +136,65 @@ export class YoloPersonTracker {
 
     let present = false;
     let conf = 0;
+    let picked = null;
 
-    if (det && det.present) {
+    if (det && det.present && Array.isArray(det.boxes) && det.boxes.length) {
+      // tracking優先で候補を選ぶ
+      if (tr.has) {
+        let bestIou = -1;
+        let best = null;
+        for (const c of det.boxes) {
+          const m = iou(tr.box, c.boxNorm);
+          if (m > bestIou) { bestIou = m; best = c; }
+        }
+        if (best && (bestIou >= iouMatch || tr.miss >= 2)) {
+          picked = best;
+        }
+      }
+
+      // trackがない/マッチしない場合は最高scoreを採用
+      if (!picked) {
+        picked = det.boxes.reduce((a, b) => (b.score > a.score ? b : a), det.boxes[0]);
+      }
+
       present = true;
-      conf = det.confidence;
+      conf = picked.score;
 
       if (!tr.has) {
-        tr.box = { ...det.boxNorm };
+        tr.box = { ...picked.boxNorm };
         tr.vx = 0; tr.vy = 0;
         tr.has = true;
         tr.miss = 0;
       } else {
-        const m = iou(tr.box, det.boxNorm);
-        if (m >= iouMatch || tr.miss >= 2) {
-          const pcx = (tr.box.x0 + tr.box.x1) * 0.5;
-          const pcy = (tr.box.y0 + tr.box.y1) * 0.5;
-          const dcx = (det.boxNorm.x0 + det.boxNorm.x1) * 0.5;
-          const dcy = (det.boxNorm.y0 + det.boxNorm.y1) * 0.5;
+        const pcx = (tr.box.x0 + tr.box.x1) * 0.5;
+        const pcy = (tr.box.y0 + tr.box.y1) * 0.5;
+        const dcx = (picked.boxNorm.x0 + picked.boxNorm.x1) * 0.5;
+        const dcy = (picked.boxNorm.y0 + picked.boxNorm.y1) * 0.5;
 
-          const sv = 0.35;
-          tr.vx = lerp(tr.vx, (dcx - pcx) / dt, sv);
-          tr.vy = lerp(tr.vy, (dcy - pcy) / dt, sv);
+        const sv = 0.35;
+        tr.vx = lerp(tr.vx, (dcx - pcx) / dt, sv);
+        tr.vy = lerp(tr.vy, (dcy - pcy) / dt, sv);
 
-          const s = clamp(smooth, 0, 1);
-          tr.box.x0 = lerp(tr.box.x0, det.boxNorm.x0, s);
-          tr.box.y0 = lerp(tr.box.y0, det.boxNorm.y0, s);
-          tr.box.x1 = lerp(tr.box.x1, det.boxNorm.x1, s);
-          tr.box.y1 = lerp(tr.box.y1, det.boxNorm.y1, s);
+        const s = clamp(smooth, 0, 1);
+        tr.box.x0 = lerp(tr.box.x0, picked.boxNorm.x0, s);
+        tr.box.y0 = lerp(tr.box.y0, picked.boxNorm.y0, s);
+        tr.box.x1 = lerp(tr.box.x1, picked.boxNorm.x1, s);
+        tr.box.y1 = lerp(tr.box.y1, picked.boxNorm.y1, s);
 
-          tr.miss = 0;
-        } else {
-          tr.miss++;
-        }
+        tr.miss = 0;
       }
     } else {
       if (tr.has) tr.miss++;
       if (tr.miss >= 10) tr.has = false;
     }
 
-    const box = tr.has ? tr.box : (det?.boxNorm ?? null);
+    const box = tr.has ? tr.box : (picked?.boxNorm ?? null);
     const xNorm = box ? clamp((box.x0 + box.x1) * 0.5, 0, 1) : 0.5;
     const yNorm = box ? clamp((box.y0 + box.y1) * 0.5, 0, 1) : 0.5;
-    const confidence = tr.has ? Math.max(conf, det?.confidence ?? 0) : (det?.confidence ?? 0);
+    const confidence = tr.has ? Math.max(conf, picked?.score ?? 0) : (picked?.score ?? 0);
 
     if (this._dbg && this.debugCanvas) {
-      this._drawDebug(videoEl, det?.boxNorm ?? null, tr.has ? tr.box : null, confidence);
+      this._drawDebug(videoEl, picked?.boxNorm ?? null, tr.has ? tr.box : null, confidence);
     }
 
     return tr.has
@@ -266,19 +281,19 @@ export class YoloPersonTracker {
 
     const boxes = this._postprocess(y, { w, h, scale, px, py });
     const keep = nms(boxes, 0.45, 20);
-    const best = keep[0];
-
-    if (!best) return { present: false, xNorm: 0.5, yNorm: 0.5, confidence: 0 };
+    if (!keep.length) return { present: false, boxes: [] };
 
     return {
       present: true,
-      confidence: best.score,
-      boxNorm: {
-        x0: clamp(best.x0 / w, 0, 1),
-        y0: clamp(best.y0 / h, 0, 1),
-        x1: clamp(best.x1 / w, 0, 1),
-        y1: clamp(best.y1 / h, 0, 1),
-      }
+      boxes: keep.map((b) => ({
+        score: b.score,
+        boxNorm: {
+          x0: clamp(b.x0 / w, 0, 1),
+          y0: clamp(b.y0 / h, 0, 1),
+          x1: clamp(b.x1 / w, 0, 1),
+          y1: clamp(b.y1 / h, 0, 1),
+        }
+      }))
     };
   }
 
@@ -361,4 +376,3 @@ export class YoloPersonTracker {
 }
 
 function lerp(a, b, t) { return a + (b - a) * t; }
-

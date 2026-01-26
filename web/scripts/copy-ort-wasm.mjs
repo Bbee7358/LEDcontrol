@@ -23,25 +23,21 @@ function copyIfExists(name) {
 
 ensureDir(outDir);
 
-const candidates = [
-  "ort-wasm.wasm",
-  "ort-wasm-simd.wasm",
-  "ort-wasm-threaded.wasm",
-  "ort-wasm-simd-threaded.wasm",
-  "ort-wasm.wasm.map",
-  "ort-wasm-simd.wasm.map",
-  "ort-wasm-threaded.wasm.map",
-  "ort-wasm-simd-threaded.wasm.map",
-];
-
 let copied = 0;
-for (const f of candidates) {
-  if (copyIfExists(f)) copied++;
+
+// onnxruntime-web 1.2x は wasm に加えて *.mjs を動的 import します
+if (fs.existsSync(srcDir)) {
+  const files = fs.readdirSync(srcDir);
+  for (const name of files) {
+    // wasm backend related artifacts
+    if (!/^ort-wasm/i.test(name)) continue;
+    if (!/\.(wasm|mjs|js|map)$/i.test(name)) continue;
+    if (copyIfExists(name)) copied++;
+  }
 }
 
 if (copied === 0) {
-  console.warn("[postinstall] onnxruntime-web wasm files not found. Check node_modules/onnxruntime-web/dist.");
+  console.warn("[postinstall] onnxruntime-web artifacts not found. Check node_modules/onnxruntime-web/dist.");
 } else {
-  console.log(`[postinstall] copied ${copied} onnxruntime-web wasm files -> public/onnxruntime/`);
+  console.log(`[postinstall] copied ${copied} onnxruntime-web artifacts -> public/onnxruntime/`);
 }
-

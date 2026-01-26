@@ -24,4 +24,17 @@ npm run preview
 
 - WebSerial は **セキュアコンテキスト（localhost含む）** が必要なので、基本は `npm run dev` を使うのが確実です。
 - 再読み込み後は、以前許可したポートが1つだけの場合に自動でそれを優先します（`Connect` クリック時）。
-- カメラトラッキングは現段階では「人検出」ではなく「動きの重心」を追跡し、`origin` に反映します（照明/背景で感度調整が必要）。
+- カメラトラッキングは YOLO（person）+ 追従で `origin` に反映します。モデルは `web/public/models/README.md` を参照してください。
+
+## よくあるエラー
+
+### `no available backend found` / `Failed to fetch dynamically imported module .../onnxruntime/ort-wasm-*.mjs`
+
+`onnxruntime-web` の wasm 付属ファイルが `web/public/onnxruntime/` に揃っていない状態です。
+
+```bash
+cd web
+npm run sync-ort
+```
+
+その後 `npm run dev` を再起動してください。
