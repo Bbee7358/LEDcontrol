@@ -9,6 +9,7 @@ import { loadEffects } from "./fx/loader.js";
   const TOTAL = BOARDS * LEDS_PER_BOARD; // 480
   const FRAME_LEN = TOTAL * 3;           // 1440
   const BAUD = 1000000;
+  const POST_OPEN_DELAY_MS = 650;        // Pico起動直後の取りこぼしを減らす
 
   // m押下中 原点追従の「更新間隔」（秒）
   const ORIGIN_FOLLOW_INTERVAL_SEC = 0.08; // 80msくらい
@@ -130,6 +131,15 @@ import { loadEffects } from "./fx/loader.js";
   let sendInFlight = false;
   let seq = 0;
   let drops = 0;
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // OS側の接続/切断イベント（ケーブル抜け・デバイス消失など）を拾う
+  if ("serial" in navigator) {
+    navigator.serial.addEventListener("disconnect", (e) => {
+      if (port && e.port === port) disconnect();
+    });
+  }
 
   // =========================================================
   // 3) 状態
@@ -999,16 +1009,26 @@ import { loadEffects } from "./fx/loader.js";
         alert("WebSerial未対応です。Chrome系で開いてください。");
         return;
       }
-      port = await navigator.serial.requestPort();
+
+      // 以前許可したポートがあればそれを優先（確実な再接続）
+      const granted = await navigator.serial.getPorts();
+      if (granted.length === 1) {
+        port = granted[0];
+      } else {
+        port = await navigator.serial.requestPort();
+      }
       await port.open({ baudRate: BAUD });
       writer = port.writable.getWriter();
 
       btnConnect.disabled = true;
       btnDisconnect.disabled = false;
-      btnStart.disabled = false;
+      btnStart.disabled = true; // 起動待ち後に有効化
       btnStop.disabled = true;
 
       setStatus("connected", `fps: ${fps.value}  seq: ${String(seq).padStart(4,"0")}`);
+
+      await sleep(POST_OPEN_DELAY_MS);
+      btnStart.disabled = false;
     } catch (e) {
       console.error(e);
       port = null; writer = null;
