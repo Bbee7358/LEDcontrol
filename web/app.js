@@ -205,6 +205,9 @@ import { YoloPersonTracker } from "./tracking/yoloPersonTracker.js";
   let trackPresent = false;
   let trackHold = { x: 0, y: 0, has: false };
   let trackBoardConf = 0;
+  const trackTrail = [];
+  const TRACK_TRAIL_MAX = 6;
+  const TRACK_TRAIL_DECAY = 0.72;
   let sse = null;
   let sseStatus = "idle";
   let sseError = "";
@@ -254,6 +257,7 @@ import { YoloPersonTracker } from "./tracking/yoloPersonTracker.js";
     trackHold.has = false;
     trackBoardConf = 0;
     lastTrackSec = 0;
+    trackTrail.length = 0;
   }
 
   function syncCameraButtons() {
@@ -1547,21 +1551,50 @@ import { YoloPersonTracker } from "./tracking/yoloPersonTracker.js";
     }
   }
 
-  function applyTrackingStripe(rgb, xMm, { strength = 1.0 } = {}) {
+  function applyTrackingStripe(rgb, xMm, tNowSec, { strength = 1.0 } = {}) {
     if (!panelLight.checked) return;
     const s = Math.max(0, Math.min(1, strength));
     if (s <= 0) return;
 
-    const core = 40;  // mm (強い赤)
-    const fade = 140; // mm (ここまでで減衰)
+    const coreSigma = 28;   // mm (中心の鋭さ)
+    const glowSigma = 110;  // mm (外側のにじみ)
+    const invCore = 1 / Math.max(1e-6, coreSigma * coreSigma * 2);
+    const invGlow = 1 / Math.max(1e-6, glowSigma * glowSigma * 2);
+
+    const breath = 0.86 + 0.14 * Math.sin(tNowSec * 2.2);
     for (let gi = 0; gi < TOTAL; gi++) {
       const dx = Math.abs(worldX[gi] - xMm);
-      if (dx > fade) continue;
-      let w = 1;
-      if (dx > core) w = 1 - (dx - core) / Math.max(1, fade - core);
-      const add = 255 * s * w;
-      const r = rgb[gi * 3 + 0];
-      rgb[gi * 3 + 0] = clamp255(Math.max(r, add));
+      const wCore = Math.exp(-(dx * dx) * invCore);
+      const wGlow = Math.exp(-(dx * dx) * invGlow);
+      if (wGlow < 0.01) continue;
+
+      const shimmer = 0.92 + 0.08 * Math.sin(tNowSec * 4.2 + dx * 0.10);
+      const w = (0.95 * wCore + 0.55 * wGlow) * breath * shimmer;
+
+      // 中心は濃い紫、外側は青〜シアンに抜ける（白寄りは避ける）
+      const t = clamp(dx / (glowSigma * 1.15), 0, 1);
+      const midT = t < 0.5 ? (t / 0.5) : ((t - 0.5) / 0.5);
+      let rBase, gBase, bBase;
+      if (t < 0.5) {
+        // purple -> deep blue
+        rBase = 220 * (1 - midT) + 70 * midT;
+        gBase = 40 * (1 - midT) + 80 * midT;
+        bBase = 255;
+      } else {
+        // deep blue -> cyan
+        rBase = 70 * (1 - midT) + 40 * midT;
+        gBase = 80 * (1 - midT) + 200 * midT;
+        bBase = 255;
+      }
+
+      const rAdd = rBase * s * w;
+      const gAdd = gBase * s * w;
+      const bAdd = bBase * s * (0.70 * wCore + 0.90 * wGlow) * shimmer;
+
+      const k = gi * 3;
+      rgb[k + 0] = clamp255(rgb[k + 0] + rAdd);
+      rgb[k + 1] = clamp255(rgb[k + 1] + gAdd);
+      rgb[k + 2] = clamp255(rgb[k + 2] + bAdd);
     }
   }
 
@@ -1793,6 +1826,13 @@ import { YoloPersonTracker } from "./tracking/yoloPersonTracker.js";
     }, tracks[0]);
   }
 
+  function pushTrackTrail(xMm) {
+    trackTrail.push(xMm);
+    if (trackTrail.length > TRACK_TRAIL_MAX) {
+      trackTrail.splice(0, trackTrail.length - TRACK_TRAIL_MAX);
+    }
+  }
+
   function getSseTracking(sens) {
     const camIndex = Number(trackSseCam.value) || 0;
     const msg = sseTracksByCameraIndex[camIndex];
@@ -1876,6 +1916,12 @@ import { YoloPersonTracker } from "./tracking/yoloPersonTracker.js";
       trackHold.has = false;
     }
 
+    if (present && trackHold.has) {
+      pushTrackTrail(trackHold.x);
+    } else if (!present) {
+      trackTrail.length = 0;
+    }
+
     if (trackEnable.checked && trackHold.has) {
       // マウス追従とは排他（暴れ防止）
       followOriginWithMouse = false;
@@ -1957,7 +2003,13 @@ import { YoloPersonTracker } from "./tracking/yoloPersonTracker.js";
     if (doFrame && running) {
       lastTick = ts;
       frame = Effects.renderFrame(tNowSec, frameBuf);
-      if (trackHold.has) applyTrackingStripe(frame, trackHold.x, { strength: trackBoardConf });
+      if (trackHold.has) {
+        for (let i = 0; i < trackTrail.length; i++) {
+          const idx = trackTrail.length - 1 - i;
+          const w = Math.pow(TRACK_TRAIL_DECAY, i);
+          applyTrackingStripe(frame, trackTrail[idx], tNowSec, { strength: trackBoardConf * w });
+        }
+      }
       applyLook(frame);
       applyGainGamma(frame);
       sendFrame(frame);
@@ -1976,7 +2028,13 @@ import { YoloPersonTracker } from "./tracking/yoloPersonTracker.js";
       const rgb = frame || Effects.renderFrame(tNowSec, frameBuf);
 
       const tmp = new Uint8Array(rgb);
-      if (trackHold.has) applyTrackingStripe(tmp, trackHold.x, { strength: trackBoardConf });
+      if (trackHold.has) {
+        for (let i = 0; i < trackTrail.length; i++) {
+          const idx = trackTrail.length - 1 - i;
+          const w = Math.pow(TRACK_TRAIL_DECAY, i);
+          applyTrackingStripe(tmp, trackTrail[idx], tNowSec, { strength: trackBoardConf * w });
+        }
+      }
       applyLook(tmp);
       applyGainGamma(tmp);
 
