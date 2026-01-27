@@ -165,12 +165,34 @@
 
       <div class="row" style="margin-top:10px;">
         <div class="toggle">
+          <input id="trackUseSse" type="checkbox" />
+          <label for="trackUseSse" style="cursor:pointer;">外部SSEを使う（track_by_many_camera）</label>
+        </div>
+      </div>
+
+      <div class="grid" style="margin-top:10px;">
+        <div>
+          <label>SSE URL</label>
+          <input id="trackSseUrl" type="text" value="http://127.0.0.1:8765/stream" />
+        </div>
+        <div>
+          <label>camera index</label>
+          <input id="trackSseCam" type="number" value="0" step="1" />
+        </div>
+      </div>
+
+      <div class="mini">
+        <span id="trackSseStatus" class="mono">sse: off</span>
+      </div>
+
+      <div class="row" style="margin-top:10px;">
+        <div class="toggle">
           <input id="trackEnable" type="checkbox" />
           <label for="trackEnable" style="cursor:pointer;">originを追従</label>
         </div>
         <div class="toggle">
           <input id="panelLight" type="checkbox" checked />
-          <label for="panelLight" style="cursor:pointer;">該当パネル点灯</label>
+          <label for="panelLight" style="cursor:pointer;">Xライン点灯</label>
         </div>
         <div class="toggle">
           <input id="trackDebug" type="checkbox" />

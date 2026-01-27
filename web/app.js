@@ -89,6 +89,10 @@ import { YoloPersonTracker } from "./tracking/yoloPersonTracker.js";
   const trackYMax = document.getElementById("trackYMax");
   const trackMirrorX = document.getElementById("trackMirrorX");
   const trackInvertY = document.getElementById("trackInvertY");
+  const trackUseSse = document.getElementById("trackUseSse");
+  const trackSseUrl = document.getElementById("trackSseUrl");
+  const trackSseCam = document.getElementById("trackSseCam");
+  const trackSseStatus = document.getElementById("trackSseStatus");
 
   const selInfo = document.getElementById("selInfo");
   const originInfo = document.getElementById("originInfo");
@@ -108,6 +112,12 @@ import { YoloPersonTracker } from "./tracking/yoloPersonTracker.js";
   function clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
   function isFiniteNumber(n){ return Number.isFinite(n); }
   const lerp = (a, b, t) => a + (b - a) * t;
+  const TRACK_CENTER_RATIO = 0.6;
+  function remapCenterRange(v, ratio = TRACK_CENTER_RATIO) {
+    const r = Math.max(0.01, Math.min(1, ratio));
+    const m = (1 - r) * 0.5;
+    return clamp((v - m) / r, 0, 1);
+  }
 
   function attachEnterToCommit(inputEl, commitFn) {
     inputEl.addEventListener("keydown", (e) => {
@@ -148,6 +158,28 @@ import { YoloPersonTracker } from "./tracking/yoloPersonTracker.js";
     return true;
   }
 
+  function loadLocalStorageString(key, fallback = "") {
+    try {
+      const v = localStorage.getItem(key);
+      return (v == null || v === "") ? fallback : v;
+    } catch {
+      return fallback;
+    }
+  }
+  function loadLocalStorageNumber(key, fallback = 0) {
+    const v = Number(loadLocalStorageString(key, ""));
+    return Number.isFinite(v) ? v : fallback;
+  }
+  function loadLocalStorageBoolean(key, fallback = false) {
+    const v = loadLocalStorageString(key, "");
+    if (v === "true") return true;
+    if (v === "false") return false;
+    return fallback;
+  }
+  function saveLocalStorage(key, value) {
+    try { localStorage.setItem(key, String(value)); } catch {}
+  }
+
   // =========================================================
   // 2) WebSerial
   // =========================================================
@@ -172,9 +204,14 @@ import { YoloPersonTracker } from "./tracking/yoloPersonTracker.js";
   let lastTrackSec = 0;
   let trackPresent = false;
   let trackHold = { x: 0, y: 0, has: false };
-  let trackBoardId = null;
-  let trackBoardYN = 0.5;
   let trackBoardConf = 0;
+  let sse = null;
+  let sseStatus = "idle";
+  let sseError = "";
+  let sseTracksByCameraIndex = {};
+  let sseTracksAtByCameraIndex = {};
+  let sseCameras = [];
+  const SSE_STALE_MS = 1500;
 
   const trackMap = {
     xMin: Number(trackXMin.value) || -630,
@@ -182,6 +219,10 @@ import { YoloPersonTracker } from "./tracking/yoloPersonTracker.js";
     yMin: Number(trackYMin.value) || -350,
     yMax: Number(trackYMax.value) || 350,
   };
+
+  trackUseSse.checked = loadLocalStorageBoolean("tracking.useSse", false);
+  trackSseUrl.value = loadLocalStorageString("tracking.sseUrl", trackSseUrl.value || "");
+  trackSseCam.value = String(loadLocalStorageNumber("tracking.cameraIndex", Number(trackSseCam.value) || 0));
 
   function syncTrackMapFromUI() {
     trackMap.xMin = Number(trackXMin.value) || trackMap.xMin;
@@ -208,12 +249,143 @@ import { YoloPersonTracker } from "./tracking/yoloPersonTracker.js";
   attachEnterToCommit(trackYMin, () => commitTrackMapInput(trackYMin, "yMin"));
   attachEnterToCommit(trackYMax, () => commitTrackMapInput(trackYMax, "yMax"));
 
+  function resetTrackingState() {
+    trackPresent = false;
+    trackHold.has = false;
+    trackBoardConf = 0;
+    lastTrackSec = 0;
+  }
+
+  function syncCameraButtons() {
+    if (trackUseSse.checked) {
+      btnCamStart.disabled = true;
+      btnCamStop.disabled = true;
+      return;
+    }
+    const running = !!(motionTracker && motionTracker.running);
+    btnCamStart.disabled = running;
+    btnCamStop.disabled = !running;
+  }
+
+  function safeJsonParse(value) {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+
+  function updateSseStatusLine() {
+    if (!trackSseStatus) return;
+    if (!trackUseSse.checked) {
+      trackSseStatus.textContent = "sse: off";
+      return;
+    }
+    const base = `sse: ${sseStatus}`;
+    trackSseStatus.textContent = sseError ? `${base} (${sseError})` : base;
+  }
+
+  function setSseStatus(status, err = "") {
+    sseStatus = status;
+    sseError = err;
+    updateSseStatusLine();
+  }
+
+  function closeSse() {
+    if (sse) {
+      try { sse.close(); } catch {}
+    }
+    sse = null;
+    setSseStatus("idle", "");
+  }
+
+  function openSse() {
+    closeSse();
+    if (!trackUseSse.checked) return;
+    const url = (trackSseUrl.value || "").trim();
+    if (!url) {
+      setSseStatus("idle", "urlなし");
+      return;
+    }
+
+    sseTracksByCameraIndex = {};
+    sseTracksAtByCameraIndex = {};
+    sseCameras = [];
+
+    setSseStatus("connecting", "");
+    try {
+      sse = new EventSource(url);
+    } catch (e) {
+      setSseStatus("error", "接続失敗");
+      return;
+    }
+
+    sse.addEventListener("open", () => {
+      setSseStatus("open", "");
+    });
+    sse.addEventListener("error", () => {
+      if (sse.readyState === EventSource.CONNECTING) {
+        setSseStatus("connecting", "再接続中");
+      } else {
+        setSseStatus("error", "接続失敗");
+      }
+    });
+    sse.addEventListener("hello", (event) => {
+      const data = safeJsonParse(event.data);
+      if (!data || data.type !== "hello") return;
+      sseCameras = Array.isArray(data.cameras) ? data.cameras : [];
+    });
+    sse.addEventListener("tracks", (event) => {
+      const data = safeJsonParse(event.data);
+      if (!data || data.type !== "tracks") return;
+      const camIndex = Number(data.cameraIndex);
+      if (!Number.isFinite(camIndex)) return;
+      sseTracksByCameraIndex[camIndex] = data;
+      sseTracksAtByCameraIndex[camIndex] = Date.now();
+    });
+    sse.addEventListener("ping", () => {});
+  }
+
+  function commitTrackSseCam() {
+    commitNumberInput(trackSseCam, () => Number(trackSseCam.value) || 0, (v) => {
+      trackSseCam.value = String(Math.round(v));
+    }, { allowEmptyToZero: true, post: () => {
+      saveLocalStorage("tracking.cameraIndex", trackSseCam.value);
+    } });
+  }
+
+  trackUseSse.addEventListener("change", () => {
+    saveLocalStorage("tracking.useSse", String(trackUseSse.checked));
+    if (trackUseSse.checked) {
+      stopCamera();
+      openSse();
+      setCamOverlayVisible(false);
+    } else {
+      closeSse();
+    }
+    resetTrackingState();
+    syncCameraButtons();
+  });
+
+  trackSseUrl.addEventListener("change", () => {
+    trackSseUrl.value = (trackSseUrl.value || "").trim();
+    saveLocalStorage("tracking.sseUrl", trackSseUrl.value);
+    if (trackUseSse.checked) openSse();
+  });
+
+  trackSseCam.addEventListener("change", commitTrackSseCam);
+  attachEnterToCommit(trackSseCam, commitTrackSseCam);
+
   function setCamOverlayVisible(on) {
     if (camOverlay) camOverlay.hidden = !on;
   }
   setCamOverlayVisible(false);
 
   async function startCamera() {
+    if (trackUseSse.checked) {
+      alert("外部SSEを使用中です。ローカルカメラを使うにはSSEをOFFにしてください。");
+      return;
+    }
     if (!navigator.mediaDevices?.getUserMedia) {
       alert("このブラウザではカメラが使えません。");
       return;
@@ -254,14 +426,14 @@ import { YoloPersonTracker } from "./tracking/yoloPersonTracker.js";
       console.error(e);
       trackInfo.textContent = "track: camera failed";
     }
+    syncCameraButtons();
   }
 
   function stopCamera() {
     if (motionTracker) motionTracker.stop();
     if (yoloTracker) yoloTracker.reset();
     yoloReady = false;
-    btnCamStart.disabled = false;
-    btnCamStop.disabled = true;
+    syncCameraButtons();
     setCamOverlayVisible(false);
     trackInfo.textContent = "track: off";
     trackHold.has = false;
@@ -272,7 +444,7 @@ import { YoloPersonTracker } from "./tracking/yoloPersonTracker.js";
   btnCamStart.addEventListener("click", startCamera);
   btnCamStop.addEventListener("click", stopCamera);
   trackDebug.addEventListener("change", () => {
-    setCamOverlayVisible(trackDebug.checked && !!(motionTracker && motionTracker.running));
+    setCamOverlayVisible(trackDebug.checked && !trackUseSse.checked && !!(motionTracker && motionTracker.running));
   });
 
   // OS側の接続/切断イベント（ケーブル抜け・デバイス消失など）を拾う
@@ -563,6 +735,9 @@ import { YoloPersonTracker } from "./tracking/yoloPersonTracker.js";
   setStatus("idle", "fps: --  seq: ----");
   mInfo.textContent = "m: off";
   trackInfo.textContent = "track: off";
+  updateSseStatusLine();
+  syncCameraButtons();
+  if (trackUseSse.checked) openSse();
 
   function clamp255(v){ return v < 0 ? 0 : v > 255 ? 255 : (v|0); }
 
@@ -1372,6 +1547,24 @@ import { YoloPersonTracker } from "./tracking/yoloPersonTracker.js";
     }
   }
 
+  function applyTrackingStripe(rgb, xMm, { strength = 1.0 } = {}) {
+    if (!panelLight.checked) return;
+    const s = Math.max(0, Math.min(1, strength));
+    if (s <= 0) return;
+
+    const core = 40;  // mm (強い赤)
+    const fade = 140; // mm (ここまでで減衰)
+    for (let gi = 0; gi < TOTAL; gi++) {
+      const dx = Math.abs(worldX[gi] - xMm);
+      if (dx > fade) continue;
+      let w = 1;
+      if (dx > core) w = 1 - (dx - core) / Math.max(1, fade - core);
+      const add = 255 * s * w;
+      const r = rgb[gi * 3 + 0];
+      rgb[gi * 3 + 0] = clamp255(Math.max(r, add));
+    }
+  }
+
   // =========================================================
   // 16) 描画
   // =========================================================
@@ -1587,35 +1780,55 @@ import { YoloPersonTracker } from "./tracking/yoloPersonTracker.js";
     Effects.spawnLayerFromCurrent(tNowSec);
   }
 
-  function updateTracking(tNowSec) {
-    if (!motionTracker || !motionTracker.running) return;
-
-    const TRACK_FPS = 15;
-    if (tNowSec - lastTrackSec < 1 / TRACK_FPS) return;
-    lastTrackSec = tNowSec;
-
-    syncTrackMapFromUI();
-
-    const sens = Math.max(0, Math.min(1, Number(trackSens.value) || 0.55));
-
-    let res = { present: false, xNorm: 0.5, yNorm: 0.5, confidence: 0 };
-    let modeLabel = "motion";
-    if (yoloTracker && yoloReady) {
-      // sens: 0..1 -> minScore: 0.60..0.25（感度↑で閾値↓）
-      yoloTracker.minScore = lerp(0.60, 0.25, sens);
-      const smooth = Math.max(0, Math.min(1, Number(trackSmooth.value) || 0.25));
-      res = yoloTracker.tick(camVideo, tNowSec, { inferFps: 12, smooth });
-      modeLabel = "yolo";
-    } else {
-      const diffThreshold = Math.round(lerp(32, 12, sens));
-      const minArea = Math.round(lerp(1200, 280, sens));
-      res = motionTracker.processFrame({ diffThreshold, minArea });
+  function pickBestTrack(tracks, targetId) {
+    if (!Array.isArray(tracks) || tracks.length === 0) return null;
+    if (targetId != null) {
+      const found = tracks.find((t) => Number(t.id) === Number(targetId));
+      if (found) return found;
     }
+    return tracks.reduce((best, t) => {
+      const a = Number(t.areaN) || 0;
+      const b = Number(best.areaN) || 0;
+      return a > b ? t : best;
+    }, tracks[0]);
+  }
 
+  function getSseTracking(sens) {
+    const camIndex = Number(trackSseCam.value) || 0;
+    const msg = sseTracksByCameraIndex[camIndex];
+    const lastAt = sseTracksAtByCameraIndex[camIndex] || 0;
+    if (!msg) return null;
+    if (Date.now() - lastAt > SSE_STALE_MS) return null;
+
+    const track = pickBestTrack(msg.tracks, msg.targetId);
+    if (!track) return null;
+
+    let x = Array.isArray(track.centerN) ? Number(track.centerN[0]) : 0.5;
+    let y = Array.isArray(track.centerN) ? Number(track.centerN[1]) : 0.5;
+    if (!Number.isFinite(x)) x = 0.5;
+    if (!Number.isFinite(y)) y = 0.5;
+    x = clamp(x, 0, 1);
+    y = clamp(y, 0, 1);
+
+    const conf = Number.isFinite(track.conf) ? Number(track.conf) : 0;
+    const minConf = lerp(0.60, 0.25, sens);
+    const present = conf >= minConf;
+    return { present, xNorm: x, yNorm: y, confidence: conf };
+  }
+
+  function applyTrackingResult(res, tNowSec) {
     let present = !!res.present;
-    let x = res.xNorm, y = res.yNorm;
+    let x = clamp(Number(res.xNorm ?? 0.5), 0, 1);
+    let y = clamp(Number(res.yNorm ?? 0.5), 0, 1);
+    const conf = Number.isFinite(res.confidence) ? Number(res.confidence) : 0;
+
     if (trackMirrorX.checked) x = 1 - x;
     if (trackInvertY.checked) y = 1 - y;
+
+    // 中央60%をLED全体にマップ（端に人が来にくい前提の補正）
+    x = remapCenterRange(x, TRACK_CENTER_RATIO);
+    // yは一旦無視（中央固定）
+    y = 0.5;
 
     const mmX = lerp(trackMap.xMin, trackMap.xMax, x);
     const mmY = lerp(trackMap.yMin, trackMap.yMax, y);
@@ -1646,11 +1859,8 @@ import { YoloPersonTracker } from "./tracking/yoloPersonTracker.js";
     trackPresent = present;
 
     if (present) {
-      trackBoardId = boardId;
-      trackBoardYN = y;
-      trackBoardConf = (res.confidence ?? 0.7);
+      trackBoardConf = conf;
     } else {
-      trackBoardId = null;
       trackBoardConf = 0;
     }
 
@@ -1671,12 +1881,61 @@ import { YoloPersonTracker } from "./tracking/yoloPersonTracker.js";
       followOriginWithMouse = false;
       mInfo.textContent = "m: off";
       origin.x = trackHold.x;
-      origin.y = trackHold.y;
       syncOriginUI();
       Effects.onOriginChanged();
     }
 
-    trackInfo.textContent = `track: ${modeLabel} ${present ? "on" : "idle"}  b:${boardId}  conf:${(res.confidence ?? 0).toFixed(2)}`;
+    return { present, boardId, conf };
+  }
+
+  function updateTracking(tNowSec) {
+    const TRACK_FPS = 15;
+    if (tNowSec - lastTrackSec < 1 / TRACK_FPS) return;
+    lastTrackSec = tNowSec;
+
+    syncTrackMapFromUI();
+
+    const sens = Math.max(0, Math.min(1, Number(trackSens.value) || 0.55));
+
+    if (trackUseSse.checked) {
+      if (sseStatus !== "open") {
+        trackPresent = false;
+        trackHold.has = false;
+        trackBoardConf = 0;
+        trackInfo.textContent = `track: sse ${sseStatus}`;
+        return;
+      }
+      const res = getSseTracking(sens);
+      if (!res) {
+        trackPresent = false;
+        trackHold.has = false;
+        trackBoardConf = 0;
+        trackInfo.textContent = "track: sse idle";
+        return;
+      }
+      const info = applyTrackingResult(res, tNowSec);
+      trackInfo.textContent = `track: sse ${info.present ? "on" : "idle"}  b:${info.boardId}  conf:${info.conf.toFixed(2)}`;
+      return;
+    }
+
+    if (!motionTracker || !motionTracker.running) return;
+
+    let res = { present: false, xNorm: 0.5, yNorm: 0.5, confidence: 0 };
+    let modeLabel = "motion";
+    if (yoloTracker && yoloReady) {
+      // sens: 0..1 -> minScore: 0.60..0.25（感度↑で閾値↓）
+      yoloTracker.minScore = lerp(0.60, 0.25, sens);
+      const smooth = Math.max(0, Math.min(1, Number(trackSmooth.value) || 0.25));
+      res = yoloTracker.tick(camVideo, tNowSec, { inferFps: 12, smooth });
+      modeLabel = "yolo";
+    } else {
+      const diffThreshold = Math.round(lerp(32, 12, sens));
+      const minArea = Math.round(lerp(1200, 280, sens));
+      res = motionTracker.processFrame({ diffThreshold, minArea });
+    }
+
+    const info = applyTrackingResult(res, tNowSec);
+    trackInfo.textContent = `track: ${modeLabel} ${info.present ? "on" : "idle"}  b:${info.boardId}  conf:${info.conf.toFixed(2)}`;
   }
 
   function loop(ts) {
@@ -1698,7 +1957,7 @@ import { YoloPersonTracker } from "./tracking/yoloPersonTracker.js";
     if (doFrame && running) {
       lastTick = ts;
       frame = Effects.renderFrame(tNowSec, frameBuf);
-      if (trackBoardId != null) applyBoardPanelGlow(frame, trackBoardId, tNowSec, { strength: trackBoardConf, yNorm: trackBoardYN });
+      if (trackHold.has) applyTrackingStripe(frame, trackHold.x, { strength: trackBoardConf });
       applyLook(frame);
       applyGainGamma(frame);
       sendFrame(frame);
@@ -1717,7 +1976,7 @@ import { YoloPersonTracker } from "./tracking/yoloPersonTracker.js";
       const rgb = frame || Effects.renderFrame(tNowSec, frameBuf);
 
       const tmp = new Uint8Array(rgb);
-      if (trackBoardId != null) applyBoardPanelGlow(tmp, trackBoardId, tNowSec, { strength: trackBoardConf, yNorm: trackBoardYN });
+      if (trackHold.has) applyTrackingStripe(tmp, trackHold.x, { strength: trackBoardConf });
       applyLook(tmp);
       applyGainGamma(tmp);
 
