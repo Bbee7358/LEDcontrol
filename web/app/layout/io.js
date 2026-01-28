@@ -1,4 +1,9 @@
+import { loadLocalStorageString, saveLocalStorage } from "../utils/storage.js";
+
 export function initLayoutIO({ dom, effects, origin, boards, BOARDS, LEDS_PER_BOARD, TOTAL, rebuildWorld, syncSelectedUI, rebuildFxParamsUI, state, setStatus, syncOriginUI }) {
+  const LAYOUT_STORAGE_KEY = "layout.v2";
+  let lastSavedText = "";
+
   function makeLayoutJSON() {
     return {
       version: 2,
@@ -50,6 +55,34 @@ export function initLayoutIO({ dom, effects, origin, boards, BOARDS, LEDS_PER_BO
     syncSelectedUI();
     return true;
   }
+
+  function loadLayoutFromLocalStorage() {
+    const text = loadLocalStorageString(LAYOUT_STORAGE_KEY, "");
+    if (!text) return false;
+    try {
+      const obj = JSON.parse(text);
+      const ok = applyLayoutJSON(obj);
+      if (!ok) return false;
+      lastSavedText = text;
+      return true;
+    } catch (e) {
+      console.warn("layout load failed", e);
+      return false;
+    }
+  }
+
+  function saveLayoutToLocalStorage() {
+    const text = JSON.stringify(makeLayoutJSON());
+    if (text === lastSavedText) return;
+    saveLocalStorage(LAYOUT_STORAGE_KEY, text);
+    lastSavedText = text;
+  }
+
+  loadLayoutFromLocalStorage();
+
+  setInterval(() => {
+    saveLayoutToLocalStorage();
+  }, 1000);
 
   dom.btnExport.addEventListener("click", () => {
     const obj = makeLayoutJSON();
