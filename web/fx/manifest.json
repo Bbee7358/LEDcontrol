@@ -8,6 +8,9 @@
     "orbitPulse.js",
     "sweepLine.js",
     "boardHop.js",
-    "sparkle.js"
+    "sparkle.js",
+    "waterHumanAura_v6_minimalBluePeople.js",
+    "blueBasePeople_only.js",
+    "allBlue.js"
   ]
 }

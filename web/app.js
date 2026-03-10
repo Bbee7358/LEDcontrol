@@ -425,9 +425,34 @@ import { loadEffects } from "./fx/loader.js";
   }
   rebuildGammaLUT();
 
+  // =========================================================
+  // Preview tuning
+  // 実機LEDの低輝度は画面プレビューより見えやすいため、画面だけ持ち上げる。
+  // 送信データには使わない。
+  // =========================================================
+  const PREVIEW = {
+    // 低輝度を見えるように持ち上げつつ、高輝度側の差も潰しにくい設定
+    // logK を上げるほど暗部が持ち上がる
+    logK: 12.0,
+    minVisible: 0,
+    haloAlpha: 0.24,
+    haloSize: 10,
+    coreSize: 4.0,
+  };
+
+  // 低輝度確認をしやすくするため、gamma UIは無効化
+  gamma.value = "1.0";
+  gammaVal.textContent = "OFF";
+  gamma.disabled = true;
+  gamma.title = "画面プレビューと実機の差が大きいため、ガンマは無効化中";
+
+  const PREVIEW_BUILD_TAG = "app_preview_tuned_v2 / 2026-03-10";
+  window.__PREVIEW_BUILD__ = PREVIEW_BUILD_TAG;
+  console.log("[PREVIEW BUILD]", PREVIEW_BUILD_TAG);
+
   fps.addEventListener("input", () => fpsVal.textContent = fps.value);
   gain.addEventListener("input", () => gainVal.textContent = Number(gain.value).toFixed(2));
-  gamma.addEventListener("input", () => { gammaVal.textContent = Number(gamma.value).toFixed(2); rebuildGammaLUT(); });
+  gamma.addEventListener("input", () => { gammaVal.textContent = "OFF"; });
 
   function commitMm2px() {
     commitNumberInput(mm2px, () => view.scale, (v) => { setZoom(v); }, { allowEmptyToZero: false });
@@ -1066,14 +1091,39 @@ import { loadEffects } from "./fx/loader.js";
   }
 
   // =========================================================
-  // 15) 色処理（gain + gamma）
+  // 15) 色処理
+  // 送信側: gainのみ
+  // 画面側: preview専用の持ち上げを別関数で行う
   // =========================================================
-  function applyGainGamma(rgb) {
+  function applyOutputGain(rgb) {
     const G = Math.max(0, Math.min(1, Number(gain.value)));
     if (G !== 1) {
       for (let i = 0; i < rgb.length; i++) rgb[i] = clamp255(Math.round(rgb[i] * G));
     }
-    for (let i = 0; i < rgb.length; i++) rgb[i] = gammaLUT[rgb[i]];
+  }
+
+  function previewMapChannel(v) {
+    if (v <= 0) return 0;
+
+    // 実機で見える低輝度を画面でも見やすくする一方、
+    // 180/200/250 など高輝度側の差も潰しにくいように、
+    // 強いgamma持ち上げではなく対数カーブで補正する。
+    const x = v / 255;
+    const k = Math.max(0.01, Number(PREVIEW.logK) || 12.0);
+    const y = Math.log1p(k * x) / Math.log1p(k);
+    let out = Math.round(y * 255);
+    if (out > 0 && PREVIEW.minVisible > 0) out = Math.max(out, PREVIEW.minVisible);
+    return clamp255(out);
+  }
+
+  function makePreviewRGB(rgb) {
+    const out = new Uint8Array(rgb.length);
+    for (let i = 0; i < rgb.length; i += 3) {
+      out[i + 0] = previewMapChannel(rgb[i + 0]);
+      out[i + 1] = previewMapChannel(rgb[i + 1]);
+      out[i + 2] = previewMapChannel(rgb[i + 2]);
+    }
+    return out;
   }
 
   // =========================================================
@@ -1230,16 +1280,19 @@ import { loadEffects } from "./fx/loader.js";
       const p = mmToScreen(worldX[gi], worldY[gi]);
 
       ctx.save();
-      ctx.globalAlpha = 0.22;
+      ctx.globalCompositeOperation = "screen";
+
+      ctx.globalAlpha = PREVIEW.haloAlpha;
       ctx.fillStyle = `rgb(${r},${g},${b})`;
       ctx.beginPath();
-      ctx.arc(p.sx, p.sy, 9, 0, Math.PI*2);
+      ctx.arc(p.sx, p.sy, PREVIEW.haloSize, 0, Math.PI*2);
       ctx.fill();
 
-      ctx.globalAlpha = 0.98;
+      ctx.globalAlpha = 1.0;
       ctx.beginPath();
-      ctx.arc(p.sx, p.sy, 3.6, 0, Math.PI*2);
+      ctx.arc(p.sx, p.sy, PREVIEW.coreSize, 0, Math.PI*2);
       ctx.fill();
+
       ctx.restore();
 
       if (showIndex.checked) {
@@ -1309,7 +1362,7 @@ import { loadEffects } from "./fx/loader.js";
     if (doFrame && running) {
       lastTick = ts;
       frame = Effects.renderFrame(tNowSec, frameBuf);
-      applyGainGamma(frame);
+      applyOutputGain(frame);
       sendFrame(frame);
 
       statusSub.textContent = `fps: ${targetFps}  seq: ${String(seq).padStart(4,"0")}`;
@@ -1325,10 +1378,8 @@ import { loadEffects } from "./fx/loader.js";
 
       const rgb = frame || Effects.renderFrame(tNowSec, frameBuf);
 
-      const tmp = new Uint8Array(rgb);
-      applyGainGamma(tmp);
-
-      drawLEDs(tmp);
+      const previewRgb = makePreviewRGB(rgb);
+      drawLEDs(previewRgb);
     }
 
     rafId = requestAnimationFrame(loop);
