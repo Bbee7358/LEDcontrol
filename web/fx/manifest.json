@@ -1,16 +1,15 @@
 {
   "files": [
     "red20.js",
-    "chronoRift.js",
-    "originGlow.js",
-    "bandFlowX.js",
     "ripple.js",
     "orbitPulse.js",
     "sweepLine.js",
     "boardHop.js",
     "sparkle.js",
-    "waterHumanAura_v6_minimalBluePeople.js",
+    "waterHumanAura_v6_minimalBluePeople_patched.js",
     "blueBasePeople_only.js",
-    "allBlue.js"
+    "allBlue.js",
+    "blueBasePersonalColorReplace.js",
+    "blueBase_personNoTrail.js"
   ]
 }

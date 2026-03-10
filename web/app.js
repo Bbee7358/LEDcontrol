@@ -350,7 +350,6 @@ import { loadEffects } from "./fx/loader.js";
     if (on) {
       lastFollowUpdateT = 0;
       setOriginAtWorld(lastMouseMm.x, lastMouseMm.y, { altKey: false });
-      Effects.spawnLayerFromCurrent(performance.now()/1000);
     }
   }
 
@@ -446,7 +445,7 @@ import { loadEffects } from "./fx/loader.js";
   gamma.disabled = true;
   gamma.title = "画面プレビューと実機の差が大きいため、ガンマは無効化中";
 
-  const PREVIEW_BUILD_TAG = "app_preview_tuned_v2 / 2026-03-10";
+  const PREVIEW_BUILD_TAG = "app_no_trail_patch / 2026-03-10";
   window.__PREVIEW_BUILD__ = PREVIEW_BUILD_TAG;
   console.log("[PREVIEW BUILD]", PREVIEW_BUILD_TAG);
 
@@ -558,85 +557,18 @@ import { loadEffects } from "./fx/loader.js";
     }
     function setParams(next) { activeParams = { ...activeParams, ...next }; }
     function resetParams() { activeParams = buildDefaultParams(activeId); }
-    function resetState() { resetBaseState(); layers.length = 0; }
-
-    // ★Layer system
-    const layers = [];
-    const tmpLayer = new Uint8Array(FRAME_LEN);
-
-    const LAYER_MAX = 24;
-    const LIFE_SEC = 1.6;
-    const FADEOUT_SEC = 0.7;
-    const LAYER_INTENSITY = 1.0;
-
-    function spawnLayerFromCurrent(nowSec) {
-      const id = activeId;
-      const params = { ...activeParams };
-
-      // baseRの積み上がり防止
-      if ("baseR" in params) params.baseR = 0;
-
-      const st = {};
-      const fx = FX_REGISTRY[id];
-      if (fx && fx.init) fx.init(st, params);
-
-      layers.push({
-        id,
-        params,
-        state: st,
-        born: nowSec,
-        lastT: 0,
-        originX: origin.x,
-        originY: origin.y,
-      });
-
-      if (layers.length > LAYER_MAX) layers.splice(0, layers.length - LAYER_MAX);
-    }
-
-    function layerAlpha(age) {
-      if (age >= LIFE_SEC) return 0;
-      const fadeStart = Math.max(0, LIFE_SEC - FADEOUT_SEC);
-      if (age <= fadeStart) return 1;
-      const t = (age - fadeStart) / Math.max(1e-6, FADEOUT_SEC);
-      return Math.max(0, 1 - t);
-    }
-
-    function mixLayerInto(out, layerRgb, a) {
-      if (a <= 0) return;
-      const k = a * LAYER_INTENSITY;
-      for (let i = 0; i < out.length; i++) {
-        out[i] = clamp255(out[i] + layerRgb[i] * k);
-      }
-    }
+    function resetState() { resetBaseState(); }
 
     function renderFrame(nowSec, outRGB) {
       const baseDt = baseLastT ? (nowSec - baseLastT) : (1/60);
       baseLastT = nowSec;
 
-      // ベース描画（今のorigin）
+      // 現在位置だけをその場で描画する。
+      // 追従レイヤーの保持・フェード合成は行わない。
       const baseCtx = { t: nowSec, dt: baseDt, originX: origin.x, originY: origin.y };
       outRGB.fill(0);
       const baseFx = FX_REGISTRY[activeId];
       if (baseFx) baseFx.render(baseCtx, outRGB, baseState, activeParams, GEO);
-
-      // レイヤー合成（固定origin）
-      for (let idx = layers.length - 1; idx >= 0; idx--) {
-        const L = layers[idx];
-        const age = nowSec - L.born;
-        const a = layerAlpha(age);
-        if (a <= 0) { layers.splice(idx, 1); continue; }
-
-        const dt = L.lastT ? (nowSec - L.lastT) : (1/60);
-        L.lastT = nowSec;
-
-        const ctxObj = { t: nowSec, dt, originX: L.originX, originY: L.originY };
-
-        tmpLayer.fill(0);
-        const fx = FX_REGISTRY[L.id];
-        if (fx) fx.render(ctxObj, tmpLayer, L.state, L.params, GEO);
-
-        mixLayerInto(outRGB, tmpLayer, a);
-      }
 
       return outRGB;
     }
@@ -660,7 +592,6 @@ import { loadEffects } from "./fx/loader.js";
       getActiveId,
       getActiveParams,
       onOriginChanged,
-      spawnLayerFromCurrent,
     };
   })();
 
@@ -1341,7 +1272,6 @@ import { loadEffects } from "./fx/loader.js";
     lastFollowUpdateT = tNowSec;
     setOriginAtWorld(lastMouseMm.x, lastMouseMm.y, { altKey: false });
 
-    Effects.spawnLayerFromCurrent(tNowSec);
   }
 
   function loop(ts) {
