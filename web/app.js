@@ -756,7 +756,7 @@ import { createFramePacket } from "./serial-protocol.js";
   }
 
   // =========================================================
-  // 11) マウス操作（ドラッグ移動/回転）+ Ctrlクリックで原点設定
+  // 11) マウス操作（ドラッグ移動/回転/視点移動）+ Ctrlクリックで原点設定
   // =========================================================
   let mouse = { sx:0, sy:0, down:false, dragging:false };
   let drag = {
@@ -764,7 +764,9 @@ import { createFramePacket } from "./serial-protocol.js";
     mode: "move",
     startCx: 0, startCy: 0, startRot: 0,
     startMmX: 0, startMmY: 0,
-    startAngle: 0
+    startAngle: 0,
+    startSx: 0, startSy: 0,
+    startViewCx: 0, startViewCy: 0,
   };
 
   function onPointerMove(e) {
@@ -780,6 +782,14 @@ import { createFramePacket } from "./serial-protocol.js";
     mouseInfo.textContent = `x: ${mm.x.toFixed(1)} mm / y: ${mm.y.toFixed(1)} mm`;
 
     if (!mouse.down || !mouse.dragging) return;
+
+    if (drag.mode === "pan") {
+      const dx = sx - drag.startSx;
+      const dy = sy - drag.startSy;
+      view.cx = drag.startViewCx - dx / view.scale;
+      view.cy = drag.startViewCy + dy / view.scale;
+      return;
+    }
 
     const step = Math.max(1, Number(snapMm.value) || 10);
     const snapEnabled = snapOn.checked && !e.altKey;
@@ -820,6 +830,17 @@ import { createFramePacket } from "./serial-protocol.js";
       return;
     }
 
+    if (e.button === 2 || e.detail >= 2) {
+      mouse.down = true;
+      mouse.dragging = true;
+      drag.mode = "pan";
+      drag.startSx = sx;
+      drag.startSy = sy;
+      drag.startViewCx = view.cx;
+      drag.startViewCy = view.cy;
+      return;
+    }
+
     const picked = pickBoardAt(sx, sy);
     if (picked !== null) {
       selectedBoard = picked;
@@ -849,6 +870,8 @@ import { createFramePacket } from "./serial-protocol.js";
 
   canvas.addEventListener("pointermove", onPointerMove);
   canvas.addEventListener("pointerdown", onPointerDown);
+  canvas.addEventListener("dblclick", (e) => e.preventDefault());
+  canvas.addEventListener("contextmenu", (e) => e.preventDefault());
   window.addEventListener("pointerup", onPointerUp);
 
   window.addEventListener("keydown", (e) => {
