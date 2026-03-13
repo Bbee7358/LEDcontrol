@@ -6,10 +6,6 @@
     "sweepLine.js",
     "boardHop.js",
     "sparkle.js",
-    "waterHumanAura_v6_minimalBluePeople_patched.js",
-    "blueBasePeople_only.js",
-    "allBlue.js",
-    "blueBasePersonalColorReplace.js",
-    "blueBase_personNoTrail.js"
+    "blueBase_personInstantOnly_brightness.js"
   ]
 }

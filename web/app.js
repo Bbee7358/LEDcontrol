@@ -4,10 +4,10 @@ import { loadEffects } from "./fx/loader.js";
   // =========================================================
   // 0) 基本設定
   // =========================================================
-  const BOARDS = 10;
+  const BOARDS = 30;
   const LEDS_PER_BOARD = 48;
-  const TOTAL = BOARDS * LEDS_PER_BOARD; // 480
-  const FRAME_LEN = TOTAL * 3;           // 1440
+  const TOTAL = BOARDS * LEDS_PER_BOARD; // 1440
+  const FRAME_LEN = TOTAL * 3;           // 4320
   const BAUD = 1000000;
 
   // m押下中 原点追従の「更新間隔」（秒）
@@ -174,7 +174,7 @@ import { loadEffects } from "./fx/loader.js";
   // =========================================================
   // 5) Zoom
   // =========================================================
-  const ZOOM_MIN = 0.6;
+  const ZOOM_MIN = 0.08;
   const ZOOM_MAX = 25.0;
 
   function setZoom(newScale, anchorSx = window.innerWidth*0.5, anchorSy = window.innerHeight*0.58) {
@@ -249,10 +249,31 @@ import { loadEffects } from "./fx/loader.js";
   const boards = [];
   function resetAllBoards() {
     boards.length = 0;
-    const spacing = 140; // mm
-    const startX = -((BOARDS - 1) * spacing) / 2;
-    for (let b = 0; b < BOARDS; b++) {
-      boards.push({ cx: startX + b*spacing, cy: 0, rotDeg: 0 });
+
+    // 30枚配置
+    // 5行 × 6列、全基板 rotDeg = 135°。
+    // 基板間隔は 400mm。
+    // board番号は左→右、上→下で 0..29。
+    const spacing = 400; // mm
+    const rows = 5;
+    const cols = 6;
+    const rotDegDefault = 225;
+
+    const x0 = -((cols - 1) * spacing) / 2;
+    const y0 =  ((rows - 1) * spacing) / 2;
+
+    for (let row = 0; row < rows; row++) {
+      for (let col = 0; col < cols; col++) {
+        boards.push({
+          cx: x0 + col * spacing,
+          cy: y0 - row * spacing,
+          rotDeg: rotDegDefault,
+        });
+      }
+    }
+
+    if (boards.length !== BOARDS) {
+      console.warn(`[layout] expected ${BOARDS} boards, got ${boards.length}`);
     }
   }
   resetAllBoards();
@@ -737,7 +758,7 @@ import { loadEffects } from "./fx/loader.js";
         boards: BOARDS,
         ledsPerBoard: LEDS_PER_BOARD,
         total: TOTAL,
-        note: "board order: 0..9, each board index: 0..47 (outer 30, mid 12 start 15deg, inner 6)."
+        note: "board order: 0..29, row-major (top-left to bottom-right), each board index: 0..47 (outer 30, mid 12 start 15deg, inner 6)."
       },
       origin: { x: origin.x, y: origin.y },
       boards: boards.map((b, idx) => ({ id: idx, cx: b.cx, cy: b.cy, rotDeg: b.rotDeg })),
@@ -1150,7 +1171,9 @@ import { loadEffects } from "./fx/loader.js";
 
       ctx.fillStyle = (b === selectedBoard) ? "rgba(233,239,250,.9)" : "rgba(233,239,250,.55)";
       ctx.font = "12px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
-      ctx.fillText(`b${b}`, c.sx + 8, c.sy - 10);
+      const row = Math.floor(b / 6);
+      const col = b % 6;
+      ctx.fillText(`b${b} r${row+1}c${col+1} p${row}`, c.sx + 8, c.sy - 10);
 
       ctx.restore();
     }
