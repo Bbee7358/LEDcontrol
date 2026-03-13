@@ -6,8 +6,11 @@ import { loadEffects } from "./fx/loader.js";
   // =========================================================
   const BOARDS = 30;
   const LEDS_PER_BOARD = 48;
-  const TOTAL = BOARDS * LEDS_PER_BOARD; // 1440
-  const FRAME_LEN = TOTAL * 3;           // 4320
+  const BOARD_TOTAL = BOARDS * LEDS_PER_BOARD; // 1440
+  const TAPE_PIN = 6;
+  const TAPE_LEDS = 150;
+  const TOTAL = BOARD_TOTAL + TAPE_LEDS; // 1590
+  const FRAME_LEN = TOTAL * 3;           // 4770
   const BAUD = 1000000;
 
   // m押下中 原点追従の「更新間隔」（秒）
@@ -279,10 +282,14 @@ import { loadEffects } from "./fx/loader.js";
   resetAllBoards();
 
   // world（連続配列）
-  const worldX = new Float32Array(TOTAL);
-  const worldY = new Float32Array(TOTAL);
-  const worldB = new Uint16Array(TOTAL);
-  const worldI = new Uint16Array(TOTAL);
+  const boardWorldX = new Float32Array(BOARD_TOTAL);
+  const boardWorldY = new Float32Array(BOARD_TOTAL);
+  const boardWorldB = new Uint16Array(BOARD_TOTAL);
+  const boardWorldI = new Uint16Array(BOARD_TOTAL);
+
+  const tapeWorldX = new Float32Array(TAPE_LEDS);
+  const tapeWorldY = new Float32Array(TAPE_LEDS);
+  const tapeWorldI = new Uint16Array(TAPE_LEDS);
 
   function rebuildWorld() {
     for (let b = 0; b < BOARDS; b++) {
@@ -294,19 +301,52 @@ import { loadEffects } from "./fx/loader.js";
         const x = p.x * c - p.y * s + bd.cx;
         const y = p.x * s + p.y * c + bd.cy;
         const gi = b * LEDS_PER_BOARD + i;
-        worldX[gi] = x;
-        worldY[gi] = y;
-        worldB[gi] = b;
-        worldI[gi] = i;
+        boardWorldX[gi] = x;
+        boardWorldY[gi] = y;
+        boardWorldB[gi] = b;
+        boardWorldI[gi] = i;
       }
+    }
+
+    let minX = Infinity, maxX = -Infinity;
+    for (let i = 0; i < BOARD_TOTAL; i++) {
+      const x = boardWorldX[i];
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+    }
+
+    const pitchMm = 16;
+    const marginMm = 220;
+    const startX = maxX + marginMm;
+    const startY = 0;
+
+    for (let i = 0; i < TAPE_LEDS; i++) {
+      tapeWorldX[i] = startX + i * pitchMm;
+      tapeWorldY[i] = startY;
+      tapeWorldI[i] = i;
     }
   }
   rebuildWorld();
 
   // geo（FXに渡す）
   const GEO = {
-    worldX, worldY, worldB, worldI,
-    TOTAL, FRAME_LEN, BOARDS, LEDS_PER_BOARD
+    worldX: boardWorldX,
+    worldY: boardWorldY,
+    worldB: boardWorldB,
+    worldI: boardWorldI,
+    TOTAL: BOARD_TOTAL,
+    FRAME_LEN: BOARD_TOTAL * 3,
+    BOARDS,
+    LEDS_PER_BOARD
+  };
+
+  const TAPE_GEO = {
+    worldX: tapeWorldX,
+    worldY: tapeWorldY,
+    worldI: tapeWorldI,
+    TOTAL: TAPE_LEDS,
+    FRAME_LEN: TAPE_LEDS * 3,
+    PIN: TAPE_PIN,
   };
 
   // =========================================================
@@ -758,6 +798,8 @@ import { loadEffects } from "./fx/loader.js";
         boards: BOARDS,
         ledsPerBoard: LEDS_PER_BOARD,
         total: TOTAL,
+        boardTotal: BOARD_TOTAL,
+        tapeLeds: TAPE_LEDS,
         note: "board order: 0..29, row-major (top-left to bottom-right), each board index: 0..47 (outer 30, mid 12 start 15deg, inner 6)."
       },
       origin: { x: origin.x, y: origin.y },
@@ -1228,10 +1270,58 @@ import { loadEffects } from "./fx/loader.js";
     ctx.restore();
   }
 
-  function drawLEDs(rgb) {
-    for (let gi = 0; gi < TOTAL; gi++) {
+
+  function renderTapeFrame(nowSec, outRGB) {
+    outRGB.fill(0);
+
+    // 基板FXとは完全分離の簡易テープFX。
+    // ここだけ差し替えれば、テープ専用制御を独立して拡張できる。
+    const speed = 7.5;
+    const head = (nowSec * speed) % TAPE_LEDS;
+    const tail = 14;
+
+    for (let i = 0; i < TAPE_LEDS; i++) {
+      let d = Math.abs(i - head);
+      d = Math.min(d, TAPE_LEDS - d);
+      const t = Math.max(0, 1 - d / tail);
+      if (t <= 0) continue;
+
+      const p = i * 3;
+      outRGB[p + 0] = clamp255(Math.round(18 * t));
+      outRGB[p + 1] = clamp255(Math.round(110 * t));
+      outRGB[p + 2] = clamp255(Math.round(255 * t));
+    }
+
+    return outRGB;
+  }
+
+  function drawTapeGuide() {
+    const x0 = tapeWorldX[0];
+    const y0 = tapeWorldY[0];
+    const x1 = tapeWorldX[TAPE_LEDS - 1];
+    const y1 = tapeWorldY[TAPE_LEDS - 1];
+    const a = mmToScreen(x0, y0);
+    const b = mmToScreen(x1, y1);
+
+    ctx.save();
+    ctx.globalAlpha = 0.55;
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "rgba(255,255,255,0.18)";
+    ctx.beginPath();
+    ctx.moveTo(a.sx, a.sy);
+    ctx.lineTo(b.sx, b.sy);
+    ctx.stroke();
+
+    ctx.fillStyle = "rgba(233,239,250,.72)";
+    ctx.font = "12px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
+    ctx.fillText(`tape ${TAPE_LEDS} leds / pin ${TAPE_PIN}`, a.sx, a.sy - 12);
+    ctx.restore();
+  }
+
+  function drawLEDSet(rgb, xs, ys, count, indexArray = null) {
+    for (let gi = 0; gi < count; gi++) {
       const r = rgb[gi*3+0], g = rgb[gi*3+1], b = rgb[gi*3+2];
-      const p = mmToScreen(worldX[gi], worldY[gi]);
+      const p = mmToScreen(xs[gi], ys[gi]);
 
       ctx.save();
       ctx.globalCompositeOperation = "screen";
@@ -1249,20 +1339,31 @@ import { loadEffects } from "./fx/loader.js";
 
       ctx.restore();
 
-      if (showIndex.checked) {
+      if (showIndex.checked && indexArray) {
         ctx.save();
         ctx.fillStyle = "rgba(233,239,250,.45)";
         ctx.font = "10px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
-        ctx.fillText(String(worldI[gi]), p.sx + 5, p.sy + 3);
+        ctx.fillText(String(indexArray[gi]), p.sx + 5, p.sy + 3);
         ctx.restore();
       }
     }
+  }
+
+  function drawLEDs(rgb) {
+    const boardRGB = rgb.subarray(0, BOARD_TOTAL * 3);
+    const tapeRGB = rgb.subarray(BOARD_TOTAL * 3);
+
+    drawLEDSet(boardRGB, boardWorldX, boardWorldY, BOARD_TOTAL, boardWorldI);
+    drawTapeGuide();
+    drawLEDSet(tapeRGB, tapeWorldX, tapeWorldY, TAPE_LEDS, tapeWorldI);
   }
 
   // =========================================================
   // 17) ループ
   // =========================================================
   const frameBuf = new Uint8Array(FRAME_LEN);
+  const boardFrameBuf = frameBuf.subarray(0, BOARD_TOTAL * 3);
+  const tapeFrameBuf = frameBuf.subarray(BOARD_TOTAL * 3);
 
   function start() {
     if (!writer) return;
@@ -1314,7 +1415,9 @@ import { loadEffects } from "./fx/loader.js";
 
     if (doFrame && running) {
       lastTick = ts;
-      frame = Effects.renderFrame(tNowSec, frameBuf);
+      Effects.renderFrame(tNowSec, boardFrameBuf);
+      renderTapeFrame(tNowSec, tapeFrameBuf);
+      frame = frameBuf;
       applyOutputGain(frame);
       sendFrame(frame);
 
@@ -1329,7 +1432,12 @@ import { loadEffects } from "./fx/loader.js";
       drawRings();
       drawOriginMarker();
 
-      const rgb = frame || Effects.renderFrame(tNowSec, frameBuf);
+      const rgb = (() => {
+        if (frame) return frame;
+        Effects.renderFrame(tNowSec, boardFrameBuf);
+        renderTapeFrame(tNowSec, tapeFrameBuf);
+        return frameBuf;
+      })();
 
       const previewRgb = makePreviewRGB(rgb);
       drawLEDs(previewRgb);
