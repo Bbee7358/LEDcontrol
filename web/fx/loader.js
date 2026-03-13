@@ -1,14 +1,23 @@
 // fx/loader.js
 export async function loadEffects() {
+  const modules = import.meta.glob("./*.js");
+
   // 1) manifest を試す（確実）
   let files = await tryLoadManifest();
 
-  // 2) manifest がない/空ならディレクトリ一覧（環境依存）を試す
+  // 2) manifest がない/空ならビルド時に見えているファイル一覧を使う
+  if (!files || files.length === 0) {
+    files = Object.keys(modules)
+      .map((path) => path.split("/").pop())
+      .filter((name) => name && name !== "loader.js");
+  }
+
+  // 3) それでも空ならディレクトリ一覧（環境依存）を試す
   if (!files || files.length === 0) {
     files = await tryScanDirectory();
   }
 
-  // 3) 最低限フォールバック
+  // 4) 最低限フォールバック
   if (!files || files.length === 0) {
     files = ["originGlow.js", "ripple.js"];
   }
@@ -18,7 +27,13 @@ export async function loadEffects() {
   const registry = {};
   for (const file of uniq) {
     try {
-      const mod = await import(`./${file}`);
+      const loader = modules[`./${file}`];
+      if (!loader) {
+        console.warn(`[FX] missing module: ${file}`);
+        continue;
+      }
+
+      const mod = await loader();
       const fx = mod.default ?? mod.fx ?? mod;
       if (!fx || typeof fx.render !== "function") {
         console.warn(`[FX] invalid module: ${file}`);
@@ -66,8 +81,7 @@ async function tryLoadManifest() {
 // 環境依存：/fx/ へのアクセスで一覧HTMLが返るサーバのみ
 async function tryScanDirectory() {
   try {
-    const url = new URL("./", import.meta.url);
-    const res = await fetch(url, { cache: "no-store" });
+    const res = await fetch("./", { cache: "no-store" });
     if (!res.ok) return null;
 
     const html = await res.text();

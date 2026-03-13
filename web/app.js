@@ -1,21 +1,37 @@
+import {
+  BAUD,
+  BOARD_TOTAL,
+  BOARDS,
+  FRAME_LEN,
+  LEDS_PER_BOARD,
+  ORIGIN_FOLLOW_INTERVAL_SEC,
+  TAPE_LEDS,
+  TAPE_PIN,
+  TOTAL,
+} from "./config.js";
+import { createEffectsController } from "./effects/controller.js";
 import { loadEffects } from "./fx/loader.js";
+import {
+  createDefaultBoards,
+  createWorldBuffers,
+  makeLocalLEDs48,
+  rebuildWorldGeometry,
+  resetBoardInPlace,
+  resetBoardsInPlace,
+} from "./layout.js";
+import {
+  clamp,
+  clamp255,
+  deg2rad,
+  dist2,
+  isFiniteNumber,
+  maybeSnap,
+  rad2deg,
+  snapValue,
+} from "./math.js";
+import { createFramePacket } from "./serial-protocol.js";
 
 (async () => {
-  // =========================================================
-  // 0) 基本設定
-  // =========================================================
-  const BOARDS = 30;
-  const LEDS_PER_BOARD = 48;
-  const BOARD_TOTAL = BOARDS * LEDS_PER_BOARD; // 1440
-  const TAPE_PIN = 6;
-  const TAPE_LEDS = 150;
-  const TOTAL = BOARD_TOTAL + TAPE_LEDS; // 1590
-  const FRAME_LEN = TOTAL * 3;           // 4770
-  const BAUD = 1000000;
-
-  // m押下中 原点追従の「更新間隔」（秒）
-  const ORIGIN_FOLLOW_INTERVAL_SEC = 0.08; // 80msくらい
-
   // =========================================================
   // 1) DOM
   // =========================================================
@@ -83,9 +99,6 @@ import { loadEffects } from "./fx/loader.js";
   // =========================================================
   // 1.5) 入力の安全化
   // =========================================================
-  function clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
-  function isFiniteNumber(n){ return Number.isFinite(n); }
-
   function attachEnterToCommit(inputEl, commitFn) {
     inputEl.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
@@ -210,121 +223,30 @@ import { loadEffects } from "./fx/loader.js";
   // =========================================================
   // 6) Geometry（基板LEDの座標計算）
   // =========================================================
-  const deg2rad = (d) => d * Math.PI / 180;
-  const rad2deg = (r) => r * 180 / Math.PI;
-
-  function makeLocalLEDs48() {
-    const pts = new Array(48);
-
-    // 外周: dia92, 30, start 0deg, CCW -> index 0..29
-    {
-      const dia = 92, n = 30, startDeg = 0;
-      const r = dia / 2;
-      for (let i = 0; i < n; i++) {
-        const a = deg2rad(startDeg + (360 * i / n));
-        pts[i] = { x: Math.cos(a) * r, y: Math.sin(a) * r };
-      }
-    }
-    // 中: dia34, 12, start 15deg, CCW -> index 30..41
-    {
-      const dia = 34, n = 12, startDeg = 15;
-      const r = dia / 2;
-      for (let i = 0; i < n; i++) {
-        const a = deg2rad(startDeg + (360 * i / n));
-        pts[30 + i] = { x: Math.cos(a) * r, y: Math.sin(a) * r };
-      }
-    }
-    // 内: dia18, 6, start 0deg, CCW -> index 42..47
-    {
-      const dia = 18, n = 6, startDeg = 0;
-      const r = dia / 2;
-      for (let i = 0; i < n; i++) {
-        const a = deg2rad(startDeg + (360 * i / n));
-        pts[42 + i] = { x: Math.cos(a) * r, y: Math.sin(a) * r };
-      }
-    }
-
-    return pts;
-  }
   const local48 = makeLocalLEDs48();
 
   // board配列（mm）
-  const boards = [];
-  function resetAllBoards() {
-    boards.length = 0;
-
-    // 30枚配置
-    // 5行 × 6列、全基板 rotDeg = 135°。
-    // 基板間隔は 400mm。
-    // board番号は左→右、上→下で 0..29。
-    const spacing = 400; // mm
-    const rows = 5;
-    const cols = 6;
-    const rotDegDefault = 225;
-
-    const x0 = -((cols - 1) * spacing) / 2;
-    const y0 =  ((rows - 1) * spacing) / 2;
-
-    for (let row = 0; row < rows; row++) {
-      for (let col = 0; col < cols; col++) {
-        boards.push({
-          cx: x0 + col * spacing,
-          cy: y0 - row * spacing,
-          rotDeg: rotDegDefault,
-        });
-      }
-    }
-
-    if (boards.length !== BOARDS) {
-      console.warn(`[layout] expected ${BOARDS} boards, got ${boards.length}`);
-    }
-  }
-  resetAllBoards();
-
-  // world（連続配列）
-  const boardWorldX = new Float32Array(BOARD_TOTAL);
-  const boardWorldY = new Float32Array(BOARD_TOTAL);
-  const boardWorldB = new Uint16Array(BOARD_TOTAL);
-  const boardWorldI = new Uint16Array(BOARD_TOTAL);
-
-  const tapeWorldX = new Float32Array(TAPE_LEDS);
-  const tapeWorldY = new Float32Array(TAPE_LEDS);
-  const tapeWorldI = new Uint16Array(TAPE_LEDS);
+  const boards = createDefaultBoards();
+  const {
+    boardWorldX,
+    boardWorldY,
+    boardWorldB,
+    boardWorldI,
+    tapeWorldX,
+    tapeWorldY,
+    tapeWorldI,
+  } = createWorldBuffers();
 
   function rebuildWorld() {
-    for (let b = 0; b < BOARDS; b++) {
-      const bd = boards[b];
-      const th = deg2rad(bd.rotDeg);
-      const c = Math.cos(th), s = Math.sin(th);
-      for (let i = 0; i < LEDS_PER_BOARD; i++) {
-        const p = local48[i];
-        const x = p.x * c - p.y * s + bd.cx;
-        const y = p.x * s + p.y * c + bd.cy;
-        const gi = b * LEDS_PER_BOARD + i;
-        boardWorldX[gi] = x;
-        boardWorldY[gi] = y;
-        boardWorldB[gi] = b;
-        boardWorldI[gi] = i;
-      }
-    }
-
-    let minX = Infinity, maxX = -Infinity;
-    for (let i = 0; i < BOARD_TOTAL; i++) {
-      const x = boardWorldX[i];
-      if (x < minX) minX = x;
-      if (x > maxX) maxX = x;
-    }
-
-    const pitchMm = 16;
-    const marginMm = 220;
-    const startX = maxX + marginMm;
-    const startY = 0;
-
-    for (let i = 0; i < TAPE_LEDS; i++) {
-      tapeWorldX[i] = startX + i * pitchMm;
-      tapeWorldY[i] = startY;
-      tapeWorldI[i] = i;
-    }
+    rebuildWorldGeometry(boards, local48, {
+      boardWorldX,
+      boardWorldY,
+      boardWorldB,
+      boardWorldI,
+      tapeWorldX,
+      tapeWorldY,
+      tapeWorldI,
+    });
   }
   rebuildWorld();
 
@@ -353,9 +275,6 @@ import { loadEffects } from "./fx/loader.js";
   // 7) 原点（x,y）管理
   // =========================================================
   const origin = { x: 0, y: 0 };
-
-  function snapValue(v, step) { return Math.round(v / step) * step; }
-  function maybeSnap(v, step, enabled) { return enabled ? snapValue(v, step) : v; }
 
   function syncOriginUI() {
     originX.value = String(Math.round(origin.x*10)/10);
@@ -472,8 +391,6 @@ import { loadEffects } from "./fx/loader.js";
   setStatus("idle", "fps: --  seq: ----");
   mInfo.textContent = "m: off";
 
-  function clamp255(v){ return v < 0 ? 0 : v > 255 ? 255 : (v|0); }
-
   // gamma LUT（0..255）
   let gammaLUT = new Uint8Array(256);
   function rebuildGammaLUT() {
@@ -558,12 +475,12 @@ import { loadEffects } from "./fx/loader.js";
   attachEnterToCommit(rotDeg, commitRotDeg);
 
   btnResetBoard.addEventListener("click", () => {
-    boards[selectedBoard] = { cx: 0, cy: 0, rotDeg: 0 };
+    resetBoardInPlace(boards, selectedBoard);
     rebuildWorld();
     syncSelectedUI();
   });
   btnResetAll.addEventListener("click", () => {
-    resetAllBoards();
+    resetBoardsInPlace(boards);
     rebuildWorld();
     syncSelectedUI();
   });
@@ -585,76 +502,13 @@ import { loadEffects } from "./fx/loader.js";
   }
 
   // =========================================================
-  // 13) Effects（単一FX + Layer合成）
+  // 13) Effects
   // =========================================================
-  const Effects = (() => {
-    function clamp255(v){ return v < 0 ? 0 : v > 255 ? 255 : (v|0); }
-
-    function buildDefaultParams(fxId) {
-      const fx = FX_REGISTRY[fxId];
-      const obj = {};
-      for (const p of (fx?.params || [])) obj[p.key] = p.default;
-      return obj;
-    }
-
-    // Base（UI選択中のFX）
-    let activeId = FX_ORDER[0] || "red20";
-    let activeParams = buildDefaultParams(activeId);
-    let baseState = {};
-    let baseLastT = 0;
-
-    function resetBaseState() {
-      baseState = {};
-      baseLastT = 0;
-      const fx = FX_REGISTRY[activeId];
-      if (fx && fx.init) fx.init(baseState, activeParams);
-    }
-
-    function setActive(id) {
-      if (!FX_REGISTRY[id]) id = FX_ORDER[0];
-      activeId = id;
-      activeParams = buildDefaultParams(activeId);
-      resetBaseState();
-    }
-    function setParams(next) { activeParams = { ...activeParams, ...next }; }
-    function resetParams() { activeParams = buildDefaultParams(activeId); }
-    function resetState() { resetBaseState(); }
-
-    function renderFrame(nowSec, outRGB) {
-      const baseDt = baseLastT ? (nowSec - baseLastT) : (1/60);
-      baseLastT = nowSec;
-
-      // 現在位置だけをその場で描画する。
-      // 追従レイヤーの保持・フェード合成は行わない。
-      const baseCtx = { t: nowSec, dt: baseDt, originX: origin.x, originY: origin.y };
-      outRGB.fill(0);
-      const baseFx = FX_REGISTRY[activeId];
-      if (baseFx) baseFx.render(baseCtx, outRGB, baseState, activeParams, GEO);
-
-      return outRGB;
-    }
-
-    function onOriginChanged() {}
-    function getRegistry(){ return FX_REGISTRY; }
-    function getOrder(){ return FX_ORDER.slice(); }
-    function getActiveId(){ return activeId; }
-    function getActiveParams(){ return { ...activeParams }; }
-
-    resetBaseState();
-
-    return {
-      renderFrame,
-      setActive,
-      setParams,
-      resetParams,
-      resetState,
-      getRegistry,
-      getOrder,
-      getActiveId,
-      getActiveParams,
-      onOriginChanged,
-    };
-  })();
+  const Effects = createEffectsController({
+    registry: FX_REGISTRY,
+    origin,
+    geo: GEO,
+  });
 
   // =========================================================
   // 13.5) FX UI
@@ -890,10 +744,6 @@ import { loadEffects } from "./fx/loader.js";
   // =========================================================
   // 10) クリック判定（基板選択）
   // =========================================================
-  function dist2(ax, ay, bx, by) {
-    const dx = ax - bx, dy = ay - by;
-    return dx*dx + dy*dy;
-  }
   function pickBoardAt(sx, sy) {
     const mm = screenToMm(sx, sy);
     let best = 0, bestD = Infinity;
@@ -1003,7 +853,7 @@ import { loadEffects } from "./fx/loader.js";
 
   window.addEventListener("keydown", (e) => {
     if (e.key === "Delete" || e.key === "Backspace") {
-      boards[selectedBoard] = { cx: 0, cy: 0, rotDeg: 0 };
+      resetBoardInPlace(boards, selectedBoard);
       rebuildWorld();
       syncSelectedUI();
     }
@@ -1062,15 +912,7 @@ import { loadEffects } from "./fx/loader.js";
     if (sendInFlight) { drops++; dropInfo.textContent = `drops: ${drops}`; return; }
     sendInFlight = true;
 
-    const packet = new Uint8Array(2 + 2 + 2 + rgb.length);
-    packet[0] = 78; // 'N'
-    packet[1] = 80; // 'P'
-    packet[2] = rgb.length & 0xff;
-    packet[3] = (rgb.length >> 8) & 0xff;
-    packet[4] = seq & 0xff;
-    packet[5] = (seq >> 8) & 0xff;
-    packet.set(rgb, 6);
-
+    const packet = createFramePacket(seq, rgb);
     seq = (seq + 1) & 0xffff;
 
     try {

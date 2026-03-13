@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>LED Layout Studio — 480 LEDs (WebSerial + JSON Layout)</title>
+  <title>LED Layout Studio — 1590 LEDs (WebSerial + JSON Layout)</title>
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
@@ -12,7 +12,7 @@
       <div class="dot"></div>
       <div class="title">
         <div class="h">LED Layout Studio</div>
-        <div class="s">480 LEDs / 10 boards / WebSerial → Pico (GP0:240, GP1:240)</div>
+        <div class="s">1590 LEDs / 30 boards / WebSerial → Pico (5 rows + tape)</div>
       </div>
     </div>
 
@@ -172,7 +172,7 @@
     <div class="section">
       <div class="head">
         <div class="h">選択基板</div>
-        <div class="hint">board 0〜9</div>
+        <div class="hint">board 0〜29</div>
       </div>
 
       <div class="grid">
@@ -195,7 +195,7 @@
       </div>
 
       <div class="split" style="margin-top:10px;">
-        <button id="btnResetBoard">Reset Board</button>
+        <button id="btnResetBoard">Reset Selected</button>
         <button id="btnResetAll">Reset All</button>
       </div>
       <div class="mini">
@@ -253,7 +253,7 @@
       <span class="mono" id="originInfo">origin: (0,0) mm</span>
       <span class="mono" id="mInfo">m: off</span>
       <span class="mono">protocol: "NP" + len(u16LE) + seq(u16LE) + payload</span>
-      <span class="mono">payload: RGB * 480</span>
+      <span class="mono">payload: RGB * 1590</span>
     </div>
     <div class="right">
       <span class="mono" id="mouseInfo">x: -- mm / y: -- mm</span>

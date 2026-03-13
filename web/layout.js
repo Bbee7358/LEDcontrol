@@ -1,0 +1,105 @@
+import {
+  BOARDS,
+  BOARD_TOTAL,
+  COLS,
+  DEFAULT_BOARD_ROTATION_DEG,
+  LEDS_PER_BOARD,
+  ROWS,
+  TAPE_LEDS,
+  BOARD_SPACING_MM,
+} from "./config.js";
+import { deg2rad } from "./math.js";
+
+export function makeLocalLEDs48() {
+  const pts = new Array(48);
+
+  fillRing(pts, 0, 30, 92, 0);
+  fillRing(pts, 30, 12, 34, 15);
+  fillRing(pts, 42, 6, 18, 0);
+
+  return pts;
+}
+
+function fillRing(target, offset, count, diameterMm, startDeg) {
+  const r = diameterMm / 2;
+  for (let i = 0; i < count; i++) {
+    const a = deg2rad(startDeg + (360 * i / count));
+    target[offset + i] = { x: Math.cos(a) * r, y: Math.sin(a) * r };
+  }
+}
+
+export function createDefaultBoards() {
+  const boards = [];
+  const x0 = -((COLS - 1) * BOARD_SPACING_MM) / 2;
+  const y0 = ((ROWS - 1) * BOARD_SPACING_MM) / 2;
+
+  for (let row = 0; row < ROWS; row++) {
+    for (let col = 0; col < COLS; col++) {
+      boards.push({
+        cx: x0 + col * BOARD_SPACING_MM,
+        cy: y0 - row * BOARD_SPACING_MM,
+        rotDeg: DEFAULT_BOARD_ROTATION_DEG,
+      });
+    }
+  }
+
+  return boards;
+}
+
+export function createWorldBuffers() {
+  return {
+    boardWorldX: new Float32Array(BOARD_TOTAL),
+    boardWorldY: new Float32Array(BOARD_TOTAL),
+    boardWorldB: new Uint16Array(BOARD_TOTAL),
+    boardWorldI: new Uint16Array(BOARD_TOTAL),
+    tapeWorldX: new Float32Array(TAPE_LEDS),
+    tapeWorldY: new Float32Array(TAPE_LEDS),
+    tapeWorldI: new Uint16Array(TAPE_LEDS),
+  };
+}
+
+export function rebuildWorldGeometry(boards, local48, world) {
+  for (let b = 0; b < BOARDS; b++) {
+    const bd = boards[b];
+    const th = deg2rad(bd.rotDeg);
+    const c = Math.cos(th);
+    const s = Math.sin(th);
+    for (let i = 0; i < LEDS_PER_BOARD; i++) {
+      const p = local48[i];
+      const x = p.x * c - p.y * s + bd.cx;
+      const y = p.x * s + p.y * c + bd.cy;
+      const gi = b * LEDS_PER_BOARD + i;
+      world.boardWorldX[gi] = x;
+      world.boardWorldY[gi] = y;
+      world.boardWorldB[gi] = b;
+      world.boardWorldI[gi] = i;
+    }
+  }
+
+  let maxX = -Infinity;
+  for (let i = 0; i < BOARD_TOTAL; i++) {
+    const x = world.boardWorldX[i];
+    if (x > maxX) maxX = x;
+  }
+
+  const pitchMm = 16;
+  const marginMm = 220;
+  const startX = maxX + marginMm;
+
+  for (let i = 0; i < TAPE_LEDS; i++) {
+    world.tapeWorldX[i] = startX + i * pitchMm;
+    world.tapeWorldY[i] = 0;
+    world.tapeWorldI[i] = i;
+  }
+}
+
+export function resetBoardsInPlace(targetBoards) {
+  const defaults = createDefaultBoards();
+  targetBoards.length = 0;
+  targetBoards.push(...defaults);
+}
+
+export function resetBoardInPlace(targetBoards, index) {
+  const defaults = createDefaultBoards();
+  targetBoards[index] = defaults[index];
+}
