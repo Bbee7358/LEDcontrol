@@ -6,6 +6,7 @@
     "sweepLine.js",
     "boardHop.js",
     "sparkle.js",
-    "blueBase_personInstantOnly_brightness.js"
+    "blueBase_personInstantOnly_brightness.js",
+    "person_debug.js"
   ]
 }
