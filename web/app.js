@@ -30,6 +30,7 @@ import {
   rad2deg,
   snapValue,
 } from "./math.js";
+import { createSceneBusReceiver } from "./scene-bus.js";
 import { createFramePacket } from "./serial-protocol.js";
 
 (async () => {
@@ -96,6 +97,11 @@ import { createFramePacket } from "./serial-protocol.js";
   const btnFxResetParams = document.getElementById("btnFxResetParams");
   const btnFxResetState = document.getElementById("btnFxResetState");
   const fxParams = document.getElementById("fxParams");
+  const voicebornSignalCard = document.getElementById("voicebornSignalCard");
+  const voicebornSignalMessage = document.getElementById("voicebornSignalMessage");
+  const voicebornSignalMeta = document.getElementById("voicebornSignalMeta");
+  const sceneBusStatus = document.getElementById("sceneBusStatus");
+  const sceneBusDetail = document.getElementById("sceneBusDetail");
 
   // =========================================================
   // 1.5) 入力の安全化
@@ -138,6 +144,41 @@ import { createFramePacket } from "./serial-protocol.js";
     if (post) post();
     return true;
   }
+
+  // =========================================================
+  // 1.6) Scene Bus: voiceborn 疎通確認
+  // =========================================================
+  const SCENE_BUS_URL = `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.hostname || "127.0.0.1"}:8787/ws`;
+  const sceneBus = createSceneBusReceiver({
+    wsUrl: SCENE_BUS_URL,
+    nodeId: `webledcontrol-monitor-${window.location.hostname || "local"}`,
+    sourceApp: "webledcontrol",
+    room: "default",
+    groups: ["main"],
+  });
+
+  sceneBus.onStatus(({ connected, error }) => {
+    sceneBusStatus.textContent = `scene-bus: ${connected ? "接続中" : "未接続"}`;
+    sceneBusDetail.textContent = error || SCENE_BUS_URL;
+  });
+
+  sceneBus.onEvent((envelope) => {
+    if (envelope.kind !== "scene.cue") return;
+
+    const payload = (envelope.payload && typeof envelope.payload === "object") ? envelope.payload : null;
+    if (!payload || payload.cue !== "voiceborn-y-pressed") return;
+
+    const receivedAt = new Date(Number(payload.sentAt || envelope.clientTs || Date.now()));
+    voicebornSignalCard.classList.remove("is-idle");
+    voicebornSignalCard.classList.add("is-active");
+    voicebornSignalMessage.textContent = String(payload.message || "押された");
+    voicebornSignalMeta.textContent = `voiceborn の Y を受信: ${receivedAt.toLocaleTimeString("ja-JP")}`;
+  });
+
+  sceneBus.start();
+  window.addEventListener("beforeunload", () => {
+    sceneBus.stop();
+  });
 
   // =========================================================
   // 2) WebSerial

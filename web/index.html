@@ -246,6 +246,22 @@
         JSONには boardごとの cx, cy, rotDeg に加え、origin と fx（選択中FX/params）も入ります。
       </div>
     </div>
+
+    <div class="section">
+      <div class="head">
+        <div class="h">Voiceborn疎通</div>
+        <div class="hint">scene-bus受信確認</div>
+      </div>
+
+      <div class="signal-card is-idle" id="voicebornSignalCard">
+        <div class="signal-label">受信ステータス</div>
+        <div class="signal-message" id="voicebornSignalMessage">未受信</div>
+        <div class="signal-meta" id="voicebornSignalMeta">voiceborn 側で Y キーが押されるとここに表示されます。</div>
+      </div>
+
+      <div class="mini" id="sceneBusStatus">scene-bus: 接続待機中</div>
+      <div class="mini" id="sceneBusDetail">ws://127.0.0.1:8787/ws</div>
+    </div>
   </div>
 
   <div id="hintbar">
