@@ -194,8 +194,9 @@ import { createFramePacket } from "./serial-protocol.js";
     if (payload.cue === "voiceborn-participants") {
       const participants = Array.isArray(payload.participants) ? payload.participants : [];
       remotePeopleState.people = participants.map(mapNormalizedPersonToWorld);
-      if (remotePeopleState.people.length > 0 && remotePeopleState.people[0]?.color) {
-        applyCurrentPersonColor(hexToRgbColor(remotePeopleState.people[0].color, TAPE_ORB_FX.defaultColor));
+      const primaryParticipant = remotePeopleState.people.find((person) => person.isPrimary) || remotePeopleState.people[0];
+      if (primaryParticipant?.color) {
+        applyCurrentPersonColor(hexToRgbColor(primaryParticipant.color, TAPE_ORB_FX.defaultColor));
       }
     }
   });
@@ -576,6 +577,7 @@ import { createFramePacket } from "./serial-protocol.js";
       x: bounds.minX + (bounds.maxX - bounds.minX) * (1 - xNorm),
       y: bounds.minY + (bounds.maxY - bounds.minY) * yNorm,
       color: String(person?.colorHex || "#00ff88"),
+      isPrimary: Boolean(person?.isPrimary),
     };
   }
 
