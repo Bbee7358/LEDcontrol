@@ -47,14 +47,14 @@ export function createEffectsController({ registry, origin, geo }) {
     resetBaseState();
   }
 
-  function renderFrame(nowSec, outRGB) {
+  function renderFrame(nowSec, outRGB, extraCtx = {}) {
     const baseDt = baseLastT ? (nowSec - baseLastT) : (1 / 60);
     baseLastT = nowSec;
 
     outRGB.fill(0);
     const baseFx = registry[activeId];
     if (baseFx) {
-      const baseCtx = { t: nowSec, dt: baseDt, originX: origin.x, originY: origin.y };
+      const baseCtx = { t: nowSec, dt: baseDt, originX: origin.x, originY: origin.y, ...extraCtx };
       baseFx.render(baseCtx, outRGB, baseState, activeParams, geo);
     }
 

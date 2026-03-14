@@ -10,6 +10,15 @@ import {
 } from "./config.js";
 import { deg2rad } from "./math.js";
 
+const TAPE_ENTRY_COL_FROM_LEFT = 1;
+const TAPE_ENTRY_ROW_FROM_BOTTOM = 3;
+
+export function getTapeSharedBoardIndex() {
+  const rowFromTop = ROWS - TAPE_ENTRY_ROW_FROM_BOTTOM;
+  const colFromLeft = TAPE_ENTRY_COL_FROM_LEFT - 1;
+  return rowFromTop * COLS + colFromLeft;
+}
+
 export function makeLocalLEDs48() {
   const pts = new Array(48);
 
@@ -76,19 +85,14 @@ export function rebuildWorldGeometry(boards, local48, world) {
     }
   }
 
-  let maxX = -Infinity;
-  for (let i = 0; i < BOARD_TOTAL; i++) {
-    const x = world.boardWorldX[i];
-    if (x > maxX) maxX = x;
-  }
-
   const pitchMm = 16;
-  const marginMm = 220;
-  const startX = maxX + marginMm;
+  const sharedBoard = boards[getTapeSharedBoardIndex()] || boards[0] || { cx: 0, cy: 0 };
+  const startX = sharedBoard.cx;
+  const startY = sharedBoard.cy;
 
   for (let i = 0; i < TAPE_LEDS; i++) {
     world.tapeWorldX[i] = startX + i * pitchMm;
-    world.tapeWorldY[i] = 0;
+    world.tapeWorldY[i] = startY;
     world.tapeWorldI[i] = i;
   }
 }

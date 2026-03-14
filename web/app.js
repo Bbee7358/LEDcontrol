@@ -14,6 +14,7 @@ import { loadEffects } from "./fx/loader.js";
 import {
   createDefaultBoards,
   createWorldBuffers,
+  getTapeSharedBoardIndex,
   makeLocalLEDs48,
   rebuildWorldGeometry,
   resetBoardInPlace,
@@ -154,6 +155,24 @@ import { createFramePacket } from "./serial-protocol.js";
   let rafId = null;
   let lastTick = 0;
   let lastDraw = 0;
+
+  function isSerialConnected() {
+    return !!writer;
+  }
+
+  function currentStatusState() {
+    if (running) return isSerialConnected() ? "running + serial" : "running preview";
+    return isSerialConnected() ? "connected" : "idle";
+  }
+
+  function currentStatusSubline() {
+    return `fps: ${running ? fps.value : "--"}  seq: ${isSerialConnected() ? String(seq).padStart(4,"0") : "local"}`;
+  }
+
+  function syncRunButtons() {
+    btnStart.disabled = running;
+    btnStop.disabled = !running;
+  }
 
   // =========================================================
   // 4) ビュー変換（mm <-> screen）
@@ -355,6 +374,9 @@ import { createFramePacket } from "./serial-protocol.js";
     defaultColor: { r: 18, g: 110, b: 255 },
   };
 
+  const tapeArrivalEvents = [];
+  const SHARED_TAPE_BOARD_INDEX = getTapeSharedBoardIndex();
+
   const PERSON_COLOR_PALETTE = [
     { r: 255, g: 72,  b: 72  },
     { r: 255, g: 140, b: 56  },
@@ -398,6 +420,28 @@ import { createFramePacket } from "./serial-protocol.js";
     return cloneColor(palette[idx]);
   }
 
+  function hexToRgbColor(hex, fallback = TAPE_ORB_FX.defaultColor) {
+    const s = String(hex ?? "").trim();
+    const m = s.match(/^#?([0-9a-fA-F]{6})$/);
+    if (!m) return cloneColor(fallback);
+    const n = parseInt(m[1], 16);
+    return {
+      r: (n >> 16) & 255,
+      g: (n >> 8) & 255,
+      b: n & 255,
+    };
+  }
+
+  function getEffectPersonColor() {
+    try {
+      const params = Effects?.getActiveParams?.();
+      if (!params || typeof params.personColor !== "string") return null;
+      return hexToRgbColor(params.personColor, TAPE_ORB_FX.defaultColor);
+    } catch {
+      return null;
+    }
+  }
+
   function applyCurrentPersonColor(color) {
     const next = cloneColor(color || pickRandomPersonColor());
     personColorState.current = next;
@@ -407,16 +451,17 @@ import { createFramePacket } from "./serial-protocol.js";
   }
 
   function refreshPersonColor() {
-    return applyCurrentPersonColor(pickRandomPersonColor());
+    return applyCurrentPersonColor(getEffectPersonColor() || pickRandomPersonColor());
   }
 
   refreshPersonColor();
 
   function spawnTapeOrb(nowSec, color) {
-    const c = color || TAPE_ORB_FX.defaultColor;
+    const c = color || getEffectPersonColor() || personColorState.current || TAPE_ORB_FX.defaultColor;
     tapeOrbState.orbs.push({
       id: tapeOrbState.nextId++,
       startSec: nowSec,
+      arrivedAtTape0: false,
       color: {
         r: clamp255(c.r ?? TAPE_ORB_FX.defaultColor.r),
         g: clamp255(c.g ?? TAPE_ORB_FX.defaultColor.g),
@@ -496,7 +541,8 @@ import { createFramePacket } from "./serial-protocol.js";
       pill.style.boxShadow = "0 0 0 2px rgba(255,255,255,.08)";
     }
   }
-  setStatus("idle", "fps: --  seq: ----");
+  syncRunButtons();
+  setStatus(currentStatusState(), currentStatusSubline());
   mInfo.textContent = "m: off";
 
   // gamma LUT（0..255）
@@ -698,6 +744,16 @@ import { createFramePacket } from "./serial-protocol.js";
         });
         right.appendChild(input);
       }
+      else if (p.type === "color") {
+        input = document.createElement("input");
+        input.type = "color";
+        input.value = String(params[p.key] || p.default || "#00ff88");
+        input.addEventListener("input", () => {
+          Effects.setParams({ [p.key]: input.value });
+          if (p.key === "personColor") refreshPersonColor();
+        });
+        right.appendChild(input);
+      }
       else {
         input = document.createElement("input");
         input.type = (p.type === "range") ? "range" : "number";
@@ -736,11 +792,13 @@ import { createFramePacket } from "./serial-protocol.js";
 
   fxSelect.addEventListener("change", () => {
     Effects.setActive(fxSelect.value);
+    refreshPersonColor();
     rebuildFxParamsUI();
   });
 
   btnFxResetParams.addEventListener("click", () => {
     Effects.resetParams();
+    refreshPersonColor();
     rebuildFxParamsUI();
   });
 
@@ -798,6 +856,7 @@ import { createFramePacket } from "./serial-protocol.js";
       if (obj.fx.params && typeof obj.fx.params === "object") {
         Effects.setParams(obj.fx.params);
       }
+      refreshPersonColor();
       fxSelect.value = Effects.getActiveId();
       rebuildFxParamsUI();
     }
@@ -825,9 +884,9 @@ import { createFramePacket } from "./serial-protocol.js";
     const text = JSON.stringify(obj, null, 2);
     try {
       await navigator.clipboard.writeText(text);
-      setStatus(writer ? (running ? "running" : "connected") : "idle",
-        `fps: ${fps.value}  seq: ${String(seq).padStart(4,"0")}  copied`);
-      setTimeout(() => setStatus(writer ? (running ? "running" : "connected") : "idle"), 650);
+      setStatus(currentStatusState(),
+        `fps: ${running ? fps.value : "--"}  seq: ${isSerialConnected() ? String(seq).padStart(4,"0") : "local"}  copied`);
+      setTimeout(() => setStatus(currentStatusState(), currentStatusSubline()), 650);
     } catch {
       alert("クリップボードにコピーできませんでした。");
     }
@@ -1005,10 +1064,9 @@ import { createFramePacket } from "./serial-protocol.js";
 
       btnConnect.disabled = true;
       btnDisconnect.disabled = false;
-      btnStart.disabled = false;
-      btnStop.disabled = true;
+      syncRunButtons();
 
-      setStatus("connected", `fps: ${fps.value}  seq: ${String(seq).padStart(4,"0")}`);
+      setStatus(currentStatusState(), currentStatusSubline());
     } catch (e) {
       console.error(e);
       port = null; writer = null;
@@ -1026,9 +1084,8 @@ import { createFramePacket } from "./serial-protocol.js";
     } finally {
       btnConnect.disabled = false;
       btnDisconnect.disabled = true;
-      btnStart.disabled = true;
-      btnStop.disabled = true;
-      setStatus("idle", "fps: --  seq: ----");
+      syncRunButtons();
+      setStatus(currentStatusState(), currentStatusSubline());
     }
   }
 
@@ -1261,6 +1318,14 @@ import { createFramePacket } from "./serial-protocol.js";
       if (ageSec < 0) continue;
 
       const head = (TAPE_LEDS - 1) - (ageSec * speed);
+      if (!orb.arrivedAtTape0 && head <= 0) {
+        orb.arrivedAtTape0 = true;
+        tapeArrivalEvents.push({
+          timeSec: nowSec,
+          color: cloneColor(orb.color),
+          source: "tape0",
+        });
+      }
       if (head + tail < 0) continue;
 
       activeOrbs.push(orb);
@@ -1285,6 +1350,16 @@ import { createFramePacket } from "./serial-protocol.js";
 
     tapeOrbState.orbs = activeOrbs.filter((orb) => (nowSec - orb.startSec) <= maxTravelSec);
     return outRGB;
+  }
+
+  function consumeTapeArrivalEvents() {
+    if (tapeArrivalEvents.length === 0) return [];
+    return tapeArrivalEvents.splice(0, tapeArrivalEvents.length);
+  }
+
+  function getSharedTapeEntryPoint() {
+    const sharedBoard = boards[SHARED_TAPE_BOARD_INDEX] || boards[0] || { cx: 0, cy: 0 };
+    return { x: sharedBoard.cx, y: sharedBoard.cy };
   }
 
   function drawTapeGuide() {
@@ -1356,25 +1431,20 @@ import { createFramePacket } from "./serial-protocol.js";
   const frameBuf = new Uint8Array(FRAME_LEN);
   const boardFrameBuf = frameBuf.subarray(0, BOARD_TOTAL * 3);
   const tapeFrameBuf = frameBuf.subarray(BOARD_TOTAL * 3);
+  let hasPreviewFrame = false;
 
   function start() {
-    if (!writer) return;
+    if (running) return;
     running = true;
-    btnStart.disabled = true;
-    btnStop.disabled = false;
-    setStatus("running", `fps: ${fps.value}  seq: ${String(seq).padStart(4,"0")}`);
+    syncRunButtons();
+    setStatus(currentStatusState(), currentStatusSubline());
     lastTick = 0;
-    rafId = requestAnimationFrame(loop);
   }
 
   function stop() {
     running = false;
-    btnStart.disabled = !writer;
-    btnStop.disabled = true;
-    setStatus(writer ? "connected" : "idle",
-      `fps: ${writer ? fps.value : "--"}  seq: ${writer ? String(seq).padStart(4,"0") : "----"}`);
-    if (rafId) cancelAnimationFrame(rafId);
-    rafId = null;
+    syncRunButtons();
+    setStatus(currentStatusState(), currentStatusSubline());
   }
 
   btnStart.addEventListener("click", start);
@@ -1402,18 +1472,27 @@ import { createFramePacket } from "./serial-protocol.js";
 
     const tNowSec = performance.now() / 1000;
     maybeUpdateOriginFollow(tNowSec);
+    const sharedEntry = getSharedTapeEntryPoint();
 
     let frame = null;
+    let frameTapeArrivals = [];
 
     if (doFrame && running) {
       lastTick = ts;
-      Effects.renderFrame(tNowSec, boardFrameBuf);
+      frameTapeArrivals = consumeTapeArrivalEvents();
+      Effects.renderFrame(tNowSec, boardFrameBuf, {
+        sharedEntryX: sharedEntry.x,
+        sharedEntryY: sharedEntry.y,
+        originColor: origin.color,
+        tapeArrivals: frameTapeArrivals,
+      });
       renderTapeFrame(tNowSec, tapeFrameBuf, boardFrameBuf);
       frame = frameBuf;
+      hasPreviewFrame = true;
       applyOutputGain(frame);
       sendFrame(frame);
 
-      statusSub.textContent = `fps: ${targetFps}  seq: ${String(seq).padStart(4,"0")}`;
+      statusSub.textContent = `fps: ${targetFps}  seq: ${isSerialConnected() ? String(seq).padStart(4,"0") : "local"}`;
     }
 
     if (doDraw) {
@@ -1426,8 +1505,16 @@ import { createFramePacket } from "./serial-protocol.js";
 
       const rgb = (() => {
         if (frame) return frame;
-        Effects.renderFrame(tNowSec, boardFrameBuf);
-        renderTapeFrame(tNowSec, tapeFrameBuf, boardFrameBuf);
+        if (!hasPreviewFrame) {
+          Effects.renderFrame(tNowSec, boardFrameBuf, {
+            sharedEntryX: sharedEntry.x,
+            sharedEntryY: sharedEntry.y,
+            originColor: origin.color,
+            tapeArrivals: [],
+          });
+          renderTapeFrame(tNowSec, tapeFrameBuf, boardFrameBuf);
+          hasPreviewFrame = true;
+        }
         return frameBuf;
       })();
 
