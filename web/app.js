@@ -286,17 +286,32 @@ import { createFramePacket } from "./serial-protocol.js";
     const step = Math.max(1, Number(snapMm.value) || 10);
     const snapEnabled = originSnap.checked && snapOn.checked && !(eLike && eLike.altKey);
 
-    origin.x = maybeSnap(mmX, step, snapEnabled);
-    origin.y = maybeSnap(mmY, step, snapEnabled);
+    const nextX = maybeSnap(mmX, step, snapEnabled);
+    const nextY = maybeSnap(mmY, step, snapEnabled);
+    const changed = (nextX !== origin.x) || (nextY !== origin.y);
+
+    origin.x = nextX;
+    origin.y = nextY;
+    if (changed) refreshPersonColor();
     syncOriginUI();
     Effects.onOriginChanged();
   }
 
   function commitOriginX() {
-    commitNumberInput(originX, () => origin.x, (v) => { origin.x = v; }, { allowEmptyToZero: true, post: () => { syncOriginUI(); Effects.onOriginChanged(); } });
+    const prevX = origin.x;
+    commitNumberInput(originX, () => origin.x, (v) => { origin.x = v; }, { allowEmptyToZero: true, post: () => {
+      if (origin.x !== prevX) refreshPersonColor();
+      syncOriginUI();
+      Effects.onOriginChanged();
+    } });
   }
   function commitOriginY() {
-    commitNumberInput(originY, () => origin.y, (v) => { origin.y = v; }, { allowEmptyToZero: true, post: () => { syncOriginUI(); Effects.onOriginChanged(); } });
+    const prevY = origin.y;
+    commitNumberInput(originY, () => origin.y, (v) => { origin.y = v; }, { allowEmptyToZero: true, post: () => {
+      if (origin.y !== prevY) refreshPersonColor();
+      syncOriginUI();
+      Effects.onOriginChanged();
+    } });
   }
   originX.addEventListener("change", commitOriginX);
   originY.addEventListener("change", commitOriginY);
@@ -304,13 +319,17 @@ import { createFramePacket } from "./serial-protocol.js";
   attachEnterToCommit(originY, commitOriginY);
 
   btnOriginZero.addEventListener("click", () => {
+    const changed = (origin.x !== 0) || (origin.y !== 0);
     origin.x = 0; origin.y = 0;
+    if (changed) refreshPersonColor();
     syncOriginUI();
     Effects.onOriginChanged();
   });
   btnOriginToSelected.addEventListener("click", () => {
     const bd = boards[selectedBoard];
+    const changed = (origin.x !== bd.cx) || (origin.y !== bd.cy);
     origin.x = bd.cx; origin.y = bd.cy;
+    if (changed) refreshPersonColor();
     syncOriginUI();
     Effects.onOriginChanged();
   });
@@ -324,6 +343,88 @@ import { createFramePacket } from "./serial-protocol.js";
   let lastFollowUpdateT = 0;
   let lastMouseMm = { x: 0, y: 0 };
 
+  const tapeOrbState = {
+    pendingSpawns: 0,
+    orbs: [],
+    nextId: 1,
+  };
+
+  const TAPE_ORB_FX = {
+    speed: 26,
+    tail: 14,
+    defaultColor: { r: 18, g: 110, b: 255 },
+  };
+
+  const PERSON_COLOR_PALETTE = [
+    { r: 255, g: 72,  b: 72  },
+    { r: 255, g: 140, b: 56  },
+    { r: 255, g: 210, b: 70  },
+    { r: 160, g: 255, b: 80  },
+    { r: 72,  g: 255, b: 144 },
+    { r: 64,  g: 220, b: 255 },
+    { r: 72,  g: 140, b: 255 },
+    { r: 132, g: 96,  b: 255 },
+    { r: 220, g: 92,  b: 255 },
+    { r: 255, g: 92,  b: 180 },
+  ];
+
+  const personColorState = {
+    current: null,
+    lastPaletteIndex: -1,
+  };
+
+  function queueTapeOrbSpawn(count = 1) {
+    tapeOrbState.pendingSpawns += Math.max(0, count | 0);
+  }
+
+  function cloneColor(c) {
+    return {
+      r: clamp255(c?.r ?? TAPE_ORB_FX.defaultColor.r),
+      g: clamp255(c?.g ?? TAPE_ORB_FX.defaultColor.g),
+      b: clamp255(c?.b ?? TAPE_ORB_FX.defaultColor.b),
+    };
+  }
+
+  function pickRandomPersonColor() {
+    const palette = PERSON_COLOR_PALETTE;
+    if (palette.length <= 0) return cloneColor(TAPE_ORB_FX.defaultColor);
+
+    let idx = Math.floor(Math.random() * palette.length);
+    if (palette.length > 1 && idx === personColorState.lastPaletteIndex) {
+      idx = (idx + 1 + Math.floor(Math.random() * (palette.length - 1))) % palette.length;
+    }
+
+    personColorState.lastPaletteIndex = idx;
+    return cloneColor(palette[idx]);
+  }
+
+  function applyCurrentPersonColor(color) {
+    const next = cloneColor(color || pickRandomPersonColor());
+    personColorState.current = next;
+    origin.color = next;
+    window.__CURRENT_PERSON_COLOR__ = { ...next };
+    return next;
+  }
+
+  function refreshPersonColor() {
+    return applyCurrentPersonColor(pickRandomPersonColor());
+  }
+
+  refreshPersonColor();
+
+  function spawnTapeOrb(nowSec, color) {
+    const c = color || TAPE_ORB_FX.defaultColor;
+    tapeOrbState.orbs.push({
+      id: tapeOrbState.nextId++,
+      startSec: nowSec,
+      color: {
+        r: clamp255(c.r ?? TAPE_ORB_FX.defaultColor.r),
+        g: clamp255(c.g ?? TAPE_ORB_FX.defaultColor.g),
+        b: clamp255(c.b ?? TAPE_ORB_FX.defaultColor.b),
+      },
+    });
+  }
+
   function setFollowMode(on){
     followOriginWithMouse = on;
     mInfo.textContent = `m: ${on ? "on" : "off"}`;
@@ -335,10 +436,17 @@ import { createFramePacket } from "./serial-protocol.js";
 
   window.addEventListener("keydown", (e) => {
     if (e.repeat) return;
+
+    const tag = (document.activeElement && document.activeElement.tagName) ? document.activeElement.tagName.toLowerCase() : "";
+    const isTyping = (tag === "input" || tag === "textarea" || tag === "select");
+    if (isTyping) return;
+
+    if (e.key === "Enter") {
+      queueTapeOrbSpawn(1);
+      return;
+    }
+
     if (e.key === "m" || e.key === "M") {
-      const tag = (document.activeElement && document.activeElement.tagName) ? document.activeElement.tagName.toLowerCase() : "";
-      const isTyping = (tag === "input" || tag === "textarea" || tag === "select");
-      if (isTyping) return;
       setFollowMode(true);
     }
   });
@@ -1136,27 +1244,46 @@ import { createFramePacket } from "./serial-protocol.js";
   }
 
 
-  function renderTapeFrame(nowSec, outRGB) {
+  function renderTapeFrame(nowSec, outRGB, boardRGB) {
     outRGB.fill(0);
 
-    // 基板FXとは完全分離の簡易テープFX。
-    // ここだけ差し替えれば、テープ専用制御を独立して拡張できる。
-    const speed = 7.5;
-    const head = (nowSec * speed) % TAPE_LEDS;
-    const tail = 14;
-
-    for (let i = 0; i < TAPE_LEDS; i++) {
-      let d = Math.abs(i - head);
-      d = Math.min(d, TAPE_LEDS - d);
-      const t = Math.max(0, 1 - d / tail);
-      if (t <= 0) continue;
-
-      const p = i * 3;
-      outRGB[p + 0] = clamp255(Math.round(18 * t));
-      outRGB[p + 1] = clamp255(Math.round(110 * t));
-      outRGB[p + 2] = clamp255(Math.round(255 * t));
+    while (tapeOrbState.pendingSpawns > 0) {
+      spawnTapeOrb(nowSec, personColorState.current || TAPE_ORB_FX.defaultColor);
+      tapeOrbState.pendingSpawns--;
     }
 
+    const activeOrbs = [];
+    const { speed, tail } = TAPE_ORB_FX;
+    const maxTravelSec = (TAPE_LEDS + tail) / Math.max(1e-6, speed);
+
+    for (const orb of tapeOrbState.orbs) {
+      const ageSec = nowSec - orb.startSec;
+      if (ageSec < 0) continue;
+
+      const head = (TAPE_LEDS - 1) - (ageSec * speed);
+      if (head + tail < 0) continue;
+
+      activeOrbs.push(orb);
+
+      const start = Math.max(0, Math.floor(head));
+      const end = Math.min(TAPE_LEDS - 1, Math.ceil(head + tail));
+      const { r, g, b } = orb.color || TAPE_ORB_FX.defaultColor;
+
+      for (let i = start; i <= end; i++) {
+        const d = i - head;
+        if (d < 0 || d > tail) continue;
+
+        const t = 1 - d / tail;
+        if (t <= 0) continue;
+
+        const p = i * 3;
+        outRGB[p + 0] = clamp255(outRGB[p + 0] + Math.round(r * t));
+        outRGB[p + 1] = clamp255(outRGB[p + 1] + Math.round(g * t));
+        outRGB[p + 2] = clamp255(outRGB[p + 2] + Math.round(b * t));
+      }
+    }
+
+    tapeOrbState.orbs = activeOrbs.filter((orb) => (nowSec - orb.startSec) <= maxTravelSec);
     return outRGB;
   }
 
@@ -1281,7 +1408,7 @@ import { createFramePacket } from "./serial-protocol.js";
     if (doFrame && running) {
       lastTick = ts;
       Effects.renderFrame(tNowSec, boardFrameBuf);
-      renderTapeFrame(tNowSec, tapeFrameBuf);
+      renderTapeFrame(tNowSec, tapeFrameBuf, boardFrameBuf);
       frame = frameBuf;
       applyOutputGain(frame);
       sendFrame(frame);
@@ -1300,7 +1427,7 @@ import { createFramePacket } from "./serial-protocol.js";
       const rgb = (() => {
         if (frame) return frame;
         Effects.renderFrame(tNowSec, boardFrameBuf);
-        renderTapeFrame(tNowSec, tapeFrameBuf);
+        renderTapeFrame(tNowSec, tapeFrameBuf, boardFrameBuf);
         return frameBuf;
       })();
 
