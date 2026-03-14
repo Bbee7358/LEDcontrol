@@ -7,6 +7,8 @@ export function createSceneBusReceiver(options) {
     statusHandlers: new Set(),
     eventHandlers: new Set(),
     lastError: null,
+    lastSeq: 0,
+    seenSeqs: new Set(),
   };
 
   function emitStatus(connected, error = null) {
@@ -32,7 +34,7 @@ export function createSceneBusReceiver(options) {
           sourceApp: options.sourceApp,
           room: options.room,
           groups: options.groups,
-          lastSeq: 0,
+          lastSeq: state.lastSeq,
         };
         socket.send(JSON.stringify(join));
         emitStatus(true, null);
@@ -48,6 +50,20 @@ export function createSceneBusReceiver(options) {
         }
 
         if (parsed?.type !== "event" || !parsed.envelope) return;
+        const seq = Number(parsed.envelope.seq);
+        if (Number.isFinite(seq)) {
+          if (state.seenSeqs.has(seq)) {
+            sendAck(seq);
+            return;
+          }
+          state.seenSeqs.add(seq);
+          state.lastSeq = Math.max(state.lastSeq, seq);
+          if (state.seenSeqs.size > 2000) {
+            const retained = Array.from(state.seenSeqs).slice(-500);
+            state.seenSeqs = new Set(retained);
+          }
+          sendAck(seq);
+        }
         for (const handler of state.eventHandlers) {
           handler(parsed.envelope, Boolean(parsed.replay));
         }
@@ -81,6 +97,11 @@ export function createSceneBusReceiver(options) {
       state.reconnectTimer = null;
       connect();
     }, delay);
+  }
+
+  function sendAck(seq) {
+    if (!state.socket || state.socket.readyState !== WebSocket.OPEN) return;
+    state.socket.send(JSON.stringify({ type: "ack", seq }));
   }
 
   return {

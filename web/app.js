@@ -166,13 +166,38 @@ import { createFramePacket } from "./serial-protocol.js";
     if (envelope.kind !== "scene.cue") return;
 
     const payload = (envelope.payload && typeof envelope.payload === "object") ? envelope.payload : null;
-    if (!payload || payload.cue !== "voiceborn-y-pressed") return;
+    if (!payload) return;
 
-    const receivedAt = new Date(Number(payload.sentAt || envelope.clientTs || Date.now()));
-    voicebornSignalCard.classList.remove("is-idle");
-    voicebornSignalCard.classList.add("is-active");
-    voicebornSignalMessage.textContent = String(payload.message || "押された");
-    voicebornSignalMeta.textContent = `voiceborn の Y を受信: ${receivedAt.toLocaleTimeString("ja-JP")}`;
+    if (payload.cue === "voiceborn-y-pressed") {
+      const receivedAt = new Date(Number(payload.sentAt || envelope.clientTs || Date.now()));
+      voicebornSignalCard.classList.remove("is-idle");
+      voicebornSignalCard.classList.add("is-active");
+      voicebornSignalMessage.textContent = String(payload.message || "押された");
+      voicebornSignalMeta.textContent = `voiceborn の Y を受信: ${receivedAt.toLocaleTimeString("ja-JP")}`;
+      return;
+    }
+
+    if (payload.cue === "voiceborn-trace-exited") {
+      const receivedAt = new Date(Number(envelope.clientTs || Date.now()));
+      const color = payload.colorHex ? hexToRgbColor(payload.colorHex, TAPE_ORB_FX.defaultColor) : null;
+      if (color) {
+        applyCurrentPersonColor(color);
+      }
+      queueTapeOrbSpawn(1, color);
+      voicebornSignalCard.classList.remove("is-idle");
+      voicebornSignalCard.classList.add("is-active");
+      voicebornSignalMessage.textContent = "光の玉を出力";
+      voicebornSignalMeta.textContent = `voiceborn の文字消失を受信: ${receivedAt.toLocaleTimeString("ja-JP")}`;
+      return;
+    }
+
+    if (payload.cue === "voiceborn-participants") {
+      const participants = Array.isArray(payload.participants) ? payload.participants : [];
+      remotePeopleState.people = participants.map(mapNormalizedPersonToWorld);
+      if (remotePeopleState.people.length > 0 && remotePeopleState.people[0]?.color) {
+        applyCurrentPersonColor(hexToRgbColor(remotePeopleState.people[0].color, TAPE_ORB_FX.defaultColor));
+      }
+    }
   });
 
   sceneBus.start();
@@ -435,9 +460,17 @@ import { createFramePacket } from "./serial-protocol.js";
     current: null,
     lastPaletteIndex: -1,
   };
+  const remotePeopleState = {
+    people: [],
+  };
 
-  function queueTapeOrbSpawn(count = 1) {
-    tapeOrbState.pendingSpawns += Math.max(0, count | 0);
+  function queueTapeOrbSpawn(count = 1, color = null) {
+    const total = Math.max(0, count | 0);
+    if (!Array.isArray(tapeOrbState.orbQueue)) tapeOrbState.orbQueue = [];
+    for (let i = 0; i < total; i += 1) {
+      tapeOrbState.pendingSpawns += 1;
+      tapeOrbState.orbQueue.push(color ? cloneColor(color) : null);
+    }
   }
 
   function cloneColor(c) {
@@ -509,6 +542,41 @@ import { createFramePacket } from "./serial-protocol.js";
         b: clamp255(c.b ?? TAPE_ORB_FX.defaultColor.b),
       },
     });
+  }
+
+  function computeWorldBounds() {
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+
+    for (let i = 0; i < boardWorldX.length; i += 1) {
+      const x = boardWorldX[i];
+      const y = boardWorldY[i];
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+
+    if (!Number.isFinite(minX) || !Number.isFinite(maxX) || !Number.isFinite(minY) || !Number.isFinite(maxY)) {
+      return { minX: -500, maxX: 500, minY: -500, maxY: 500 };
+    }
+
+    return { minX, maxX, minY, maxY };
+  }
+
+  function mapNormalizedPersonToWorld(person) {
+    const bounds = computeWorldBounds();
+    const xNorm = clamp(Number(person?.x), 0, 1);
+    const yNorm = clamp(Number(person?.y), 0, 1);
+    return {
+      id: String(person?.id || ""),
+      x: bounds.minX + (bounds.maxX - bounds.minX) * (1 - xNorm),
+      y: bounds.minY + (bounds.maxY - bounds.minY) * yNorm,
+      color: String(person?.colorHex || "#00ff88"),
+    };
   }
 
   function setFollowMode(on){
@@ -1346,7 +1414,10 @@ import { createFramePacket } from "./serial-protocol.js";
     outRGB.fill(0);
 
     while (tapeOrbState.pendingSpawns > 0) {
-      spawnTapeOrb(nowSec, personColorState.current || TAPE_ORB_FX.defaultColor);
+      const queuedColor = Array.isArray(tapeOrbState.orbQueue) && tapeOrbState.orbQueue.length > 0
+        ? tapeOrbState.orbQueue.shift()
+        : null;
+      spawnTapeOrb(nowSec, queuedColor || personColorState.current || TAPE_ORB_FX.defaultColor);
       tapeOrbState.pendingSpawns--;
     }
 
@@ -1525,6 +1596,7 @@ import { createFramePacket } from "./serial-protocol.js";
         sharedEntryX: sharedEntry.x,
         sharedEntryY: sharedEntry.y,
         originColor: origin.color,
+        people: remotePeopleState.people,
         tapeArrivals: frameTapeArrivals,
       });
       renderTapeFrame(tNowSec, tapeFrameBuf, boardFrameBuf);
@@ -1551,6 +1623,7 @@ import { createFramePacket } from "./serial-protocol.js";
             sharedEntryX: sharedEntry.x,
             sharedEntryY: sharedEntry.y,
             originColor: origin.color,
+            people: remotePeopleState.people,
             tapeArrivals: [],
           });
           renderTapeFrame(tNowSec, tapeFrameBuf, boardFrameBuf);
