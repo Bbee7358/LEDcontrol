@@ -35,7 +35,7 @@ static const uint8_t BOARDS = ROWS * COLS;       // 30
 static const uint16_t LEDS_PER_BOARD = 48;
 static const uint16_t LEDS_PER_ROW = COLS * LEDS_PER_BOARD; // 288
 static const uint16_t BOARD_TOTAL = BOARDS * LEDS_PER_BOARD; // 1440
-static const uint16_t TAPE_LEDS = 150;
+static const uint16_t TAPE_LEDS = 300;
 static const uint16_t TOTAL = BOARD_TOTAL + TAPE_LEDS;      // 1590
 static const uint16_t FRAME_LEN = TOTAL * 3;                // 4770 bytes
 

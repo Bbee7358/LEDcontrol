@@ -6,7 +6,7 @@ export const LEDS_PER_BOARD = 48;
 export const BOARD_TOTAL = BOARDS * LEDS_PER_BOARD;
 
 export const TAPE_PIN = 11;
-export const TAPE_LEDS = 150;
+export const TAPE_LEDS = 300;
 
 export const TOTAL = BOARD_TOTAL + TAPE_LEDS;
 export const FRAME_LEN = TOTAL * 3;
