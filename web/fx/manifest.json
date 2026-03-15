@@ -8,6 +8,7 @@
     "sparkle.js",
     "tapeArrivalRipple.js",
     "blueBase_personInstantOnly_brightness.js",
-    "person_debug.js"
+    "person_debug.js",
+    "voice_orb_field.js"
   ]
 }

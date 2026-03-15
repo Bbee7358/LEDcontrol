@@ -34,6 +34,8 @@ import { createSceneBusReceiver } from "./scene-bus.js";
 import { createFramePacket } from "./serial-protocol.js";
 
 (async () => {
+  const DEFAULT_FX_ID = "voiceOrbField";
+
   // =========================================================
   // 1) DOM
   // =========================================================
@@ -919,6 +921,13 @@ import { createFramePacket } from "./serial-protocol.js";
 
   buildFxUI();
 
+  if (FX_REGISTRY[DEFAULT_FX_ID]) {
+    Effects.setActive(DEFAULT_FX_ID);
+    refreshPersonColor();
+    fxSelect.value = Effects.getActiveId();
+    rebuildFxParamsUI();
+  }
+
   // =========================================================
   // 9) JSON export/import（origin + fx も保存）
   // =========================================================
@@ -1163,25 +1172,73 @@ import { createFramePacket } from "./serial-protocol.js";
   // =========================================================
   // 12) WebSerial 接続
   // =========================================================
+  async function attachPort(nextPort) {
+    if (!nextPort) return false;
+
+    if (writer) {
+      writer.releaseLock();
+      writer = null;
+    }
+    if (port && port !== nextPort) {
+      try {
+        await port.close();
+      } catch {}
+    }
+
+    port = nextPort;
+    await port.open({ baudRate: BAUD });
+    writer = port.writable.getWriter();
+
+    btnConnect.disabled = true;
+    btnDisconnect.disabled = false;
+    syncRunButtons();
+    setStatus(currentStatusState(), currentStatusSubline());
+    return true;
+  }
+
   async function connect() {
     try {
       if (!("serial" in navigator)) {
         alert("WebSerial未対応です。Chrome系で開いてください。");
         return;
       }
-      port = await navigator.serial.requestPort();
-      await port.open({ baudRate: BAUD });
-      writer = port.writable.getWriter();
-
-      btnConnect.disabled = true;
-      btnDisconnect.disabled = false;
-      syncRunButtons();
-
-      setStatus(currentStatusState(), currentStatusSubline());
+      const requestedPort = await navigator.serial.requestPort();
+      await attachPort(requestedPort);
     } catch (e) {
       console.error(e);
       port = null; writer = null;
+      btnConnect.disabled = false;
+      btnDisconnect.disabled = true;
+      syncRunButtons();
       setStatus("connect failed");
+    }
+  }
+
+  async function autoConnectAuthorizedPort() {
+    if (!("serial" in navigator) || writer) {
+      return false;
+    }
+
+    try {
+      const ports = await navigator.serial.getPorts();
+      if (!ports.length) {
+        btnConnect.disabled = false;
+        btnDisconnect.disabled = true;
+        syncRunButtons();
+        setStatus(currentStatusState(), currentStatusSubline());
+        return false;
+      }
+      await attachPort(ports[0]);
+      return true;
+    } catch (e) {
+      console.error(e);
+      port = null;
+      writer = null;
+      btnConnect.disabled = false;
+      btnDisconnect.disabled = true;
+      syncRunButtons();
+      setStatus("auto connect failed");
+      return false;
     }
   }
 
@@ -1202,6 +1259,18 @@ import { createFramePacket } from "./serial-protocol.js";
 
   btnConnect.addEventListener("click", connect);
   btnDisconnect.addEventListener("click", disconnect);
+
+  if ("serial" in navigator) {
+    navigator.serial.addEventListener("connect", () => {
+      void autoConnectAuthorizedPort();
+    });
+    navigator.serial.addEventListener("disconnect", async (event) => {
+      if (event.target === port || event.port === port) {
+        await disconnect();
+      }
+    });
+    void autoConnectAuthorizedPort();
+  }
 
   // =========================================================
   // 14) 送信（詰まりはスキップ）
@@ -1563,6 +1632,7 @@ import { createFramePacket } from "./serial-protocol.js";
 
   btnStart.addEventListener("click", start);
   btnStop.addEventListener("click", stop);
+  start();
 
   function maybeUpdateOriginFollow(tNowSec) {
     if (!followOriginWithMouse) return;

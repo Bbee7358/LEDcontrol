@@ -41,11 +41,19 @@ export function createDefaultBoards() {
   const boards = [];
   const x0 = -((COLS - 1) * BOARD_SPACING_MM) / 2;
   const y0 = ((ROWS - 1) * BOARD_SPACING_MM) / 2;
+  const compressedBottomStartX = x0;
+  const compressedBottomEndX = x0 + BOARD_SPACING_MM * 3;
+  const compressedBottomStep = (compressedBottomEndX - compressedBottomStartX) / Math.max(1, COLS - 1);
 
   for (let row = 0; row < ROWS; row++) {
     for (let col = 0; col < COLS; col++) {
+      const isBottomRow = row === ROWS - 1;
+      const cx = isBottomRow
+        ? compressedBottomStartX + compressedBottomStep * col
+        : x0 + col * BOARD_SPACING_MM;
+
       boards.push({
-        cx: x0 + col * BOARD_SPACING_MM,
+        cx,
         cy: y0 - row * BOARD_SPACING_MM,
         rotDeg: DEFAULT_BOARD_ROTATION_DEG,
       });

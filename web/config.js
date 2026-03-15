@@ -14,5 +14,5 @@ export const FRAME_LEN = TOTAL * 3;
 export const BAUD = 1000000;
 export const ORIGIN_FOLLOW_INTERVAL_SEC = 0.08;
 
-export const BOARD_SPACING_MM = 400;
+export const BOARD_SPACING_MM = 600;
 export const DEFAULT_BOARD_ROTATION_DEG = 225;
