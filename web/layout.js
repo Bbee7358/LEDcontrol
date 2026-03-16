@@ -6,6 +6,7 @@ import {
   LEDS_PER_BOARD,
   ROWS,
   TAPE_LEDS,
+  TAPE2_LEDS,
   BOARD_SPACING_MM,
 } from "./config.js";
 import { deg2rad } from "./math.js";
@@ -72,7 +73,14 @@ export function createWorldBuffers() {
     tapeWorldX: new Float32Array(TAPE_LEDS),
     tapeWorldY: new Float32Array(TAPE_LEDS),
     tapeWorldI: new Uint16Array(TAPE_LEDS),
+    tape2WorldX: new Float32Array(TAPE2_LEDS),
+    tape2WorldY: new Float32Array(TAPE2_LEDS),
+    tape2WorldI: new Uint16Array(TAPE2_LEDS),
   };
+}
+
+function lerp(a, b, t) {
+  return a + (b - a) * t;
 }
 
 export function rebuildWorldGeometry(boards, local48, world) {
@@ -102,6 +110,47 @@ export function rebuildWorldGeometry(boards, local48, world) {
     world.tapeWorldX[i] = startX + i * pitchMm;
     world.tapeWorldY[i] = startY;
     world.tapeWorldI[i] = i;
+  }
+
+  const joinAIndex = 24;
+  const joinBIndex = 42;
+  const ax = world.tapeWorldX[joinAIndex] ?? startX;
+  const ay = world.tapeWorldY[joinAIndex] ?? startY;
+  const bx = world.tapeWorldX[joinBIndex] ?? startX;
+  const by = world.tapeWorldY[joinBIndex] ?? startY;
+  const dropMm = 420;
+
+  const p0 = { x: ax, y: ay };
+  const p1 = { x: ax, y: ay - dropMm };
+  const p2 = { x: bx, y: by - dropMm };
+  const p3 = { x: bx, y: by };
+  const len0 = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+  const len1 = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+  const len2 = Math.hypot(p3.x - p2.x, p3.y - p2.y);
+  const total = Math.max(1, len0 + len1 + len2);
+
+  for (let i = 0; i < TAPE2_LEDS; i++) {
+    const distance = (total * i) / Math.max(1, TAPE2_LEDS - 1);
+    let x = p0.x;
+    let y = p0.y;
+
+    if (distance <= len0) {
+      const t = len0 <= 0 ? 0 : distance / len0;
+      x = lerp(p0.x, p1.x, t);
+      y = lerp(p0.y, p1.y, t);
+    } else if (distance <= len0 + len1) {
+      const t = len1 <= 0 ? 0 : (distance - len0) / len1;
+      x = lerp(p1.x, p2.x, t);
+      y = lerp(p1.y, p2.y, t);
+    } else {
+      const t = len2 <= 0 ? 0 : (distance - len0 - len1) / len2;
+      x = lerp(p2.x, p3.x, t);
+      y = lerp(p2.y, p3.y, t);
+    }
+
+    world.tape2WorldX[i] = x;
+    world.tape2WorldY[i] = y;
+    world.tape2WorldI[i] = i;
   }
 }
 

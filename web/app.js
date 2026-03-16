@@ -6,6 +6,7 @@ import {
   LEDS_PER_BOARD,
   ORIGIN_FOLLOW_INTERVAL_SEC,
   TAPE_LEDS,
+  TAPE2_LEDS,
   TAPE_PIN,
   TOTAL,
 } from "./config.js";
@@ -323,6 +324,9 @@ import { createFramePacket } from "./serial-protocol.js";
     tapeWorldX,
     tapeWorldY,
     tapeWorldI,
+    tape2WorldX,
+    tape2WorldY,
+    tape2WorldI,
   } = createWorldBuffers();
 
   function rebuildWorld() {
@@ -334,9 +338,11 @@ import { createFramePacket } from "./serial-protocol.js";
       tapeWorldX,
       tapeWorldY,
       tapeWorldI,
+      tape2WorldX,
+      tape2WorldY,
+      tape2WorldI,
     });
   }
-  rebuildWorld();
 
   // geo（FXに渡す）
   const GEO = {
@@ -358,6 +364,11 @@ import { createFramePacket } from "./serial-protocol.js";
     FRAME_LEN: TAPE_LEDS * 3,
     PIN: TAPE_PIN,
   };
+
+  const VIRTUAL_TAPE2_JOIN_A = 24;
+  const VIRTUAL_TAPE2_JOIN_B = 42;
+
+  rebuildWorld();
 
   // =========================================================
   // 7) 原点（x,y）管理
@@ -436,11 +447,29 @@ import { createFramePacket } from "./serial-protocol.js";
     orbs: [],
     nextId: 1,
   };
+  const tape2OrbState = {
+    leftOrbs: [],
+    rightOrbs: [],
+    nextId: 1,
+    nextLeftSpawnSec: 0,
+    nextRightSpawnSec: 0,
+  };
 
   const TAPE_ORB_FX = {
     speed: 26,
     tail: 14,
     defaultColor: { r: 18, g: 110, b: 255 },
+  };
+  const TAPE_OUTPUT_MAX = 20;
+  const TAPE2_CENTER_INDEX = Math.floor(TAPE2_LEDS / 2);
+  const TAPE2_ORB_FX = {
+    speed: 18,
+    tail: 17,
+    spawnMinIntervalSec: 15,
+    spawnMaxIntervalSec: 30,
+    minGapBetweenSidesSec: 7,
+    coreBoost: 1.35,
+    glowFloor: 0.12,
   };
 
   const tapeArrivalEvents = [];
@@ -467,12 +496,15 @@ import { createFramePacket } from "./serial-protocol.js";
     people: [],
   };
 
-  function queueTapeOrbSpawn(count = 1, color = null) {
+  function queueTapeOrbSpawn(count = 1, color = null, originIndex = TAPE_LEDS - 1) {
     const total = Math.max(0, count | 0);
     if (!Array.isArray(tapeOrbState.orbQueue)) tapeOrbState.orbQueue = [];
     for (let i = 0; i < total; i += 1) {
       tapeOrbState.pendingSpawns += 1;
-      tapeOrbState.orbQueue.push(color ? cloneColor(color) : null);
+      tapeOrbState.orbQueue.push({
+        color: color ? normalizeTapeColor(color) : null,
+        originIndex: clamp(Math.round(originIndex), 0, TAPE_LEDS - 1),
+      });
     }
   }
 
@@ -481,6 +513,30 @@ import { createFramePacket } from "./serial-protocol.js";
       r: clamp255(c?.r ?? TAPE_ORB_FX.defaultColor.r),
       g: clamp255(c?.g ?? TAPE_ORB_FX.defaultColor.g),
       b: clamp255(c?.b ?? TAPE_ORB_FX.defaultColor.b),
+    };
+  }
+
+  function normalizeTapeColor(c) {
+    const base = cloneColor(c);
+    const maxChannel = Math.max(base.r, base.g, base.b, 1);
+    if (maxChannel <= TAPE_OUTPUT_MAX) return base;
+    const scale = TAPE_OUTPUT_MAX / maxChannel;
+    return {
+      r: Math.max(0, Math.round(base.r * scale)),
+      g: Math.max(0, Math.round(base.g * scale)),
+      b: Math.max(0, Math.round(base.b * scale)),
+    };
+  }
+
+  function expandTapeColorForFx(c) {
+    const base = cloneColor(c);
+    const maxChannel = Math.max(base.r, base.g, base.b, 0);
+    if (maxChannel <= 0 || maxChannel > TAPE_OUTPUT_MAX) return base;
+    const scale = 255 / maxChannel;
+    return {
+      r: clamp255(Math.round(base.r * scale)),
+      g: clamp255(Math.round(base.g * scale)),
+      b: clamp255(Math.round(base.b * scale)),
     };
   }
 
@@ -533,17 +589,14 @@ import { createFramePacket } from "./serial-protocol.js";
 
   refreshPersonColor();
 
-  function spawnTapeOrb(nowSec, color) {
+  function spawnTapeOrb(nowSec, color, originIndex = TAPE_LEDS - 1) {
     const c = color || getEffectPersonColor() || personColorState.current || TAPE_ORB_FX.defaultColor;
     tapeOrbState.orbs.push({
       id: tapeOrbState.nextId++,
       startSec: nowSec,
       arrivedAtTape0: false,
-      color: {
-        r: clamp255(c.r ?? TAPE_ORB_FX.defaultColor.r),
-        g: clamp255(c.g ?? TAPE_ORB_FX.defaultColor.g),
-        b: clamp255(c.b ?? TAPE_ORB_FX.defaultColor.b),
-      },
+      originIndex: clamp(Math.round(originIndex), 0, TAPE_LEDS - 1),
+      color: normalizeTapeColor(c),
     });
   }
 
@@ -1485,10 +1538,14 @@ import { createFramePacket } from "./serial-protocol.js";
     outRGB.fill(0);
 
     while (tapeOrbState.pendingSpawns > 0) {
-      const queuedColor = Array.isArray(tapeOrbState.orbQueue) && tapeOrbState.orbQueue.length > 0
+      const queued = Array.isArray(tapeOrbState.orbQueue) && tapeOrbState.orbQueue.length > 0
         ? tapeOrbState.orbQueue.shift()
         : null;
-      spawnTapeOrb(nowSec, queuedColor || personColorState.current || TAPE_ORB_FX.defaultColor);
+      spawnTapeOrb(
+        nowSec,
+        queued?.color || personColorState.current || TAPE_ORB_FX.defaultColor,
+        queued?.originIndex ?? (TAPE_LEDS - 1),
+      );
       tapeOrbState.pendingSpawns--;
     }
 
@@ -1500,12 +1557,13 @@ import { createFramePacket } from "./serial-protocol.js";
       const ageSec = nowSec - orb.startSec;
       if (ageSec < 0) continue;
 
-      const head = (TAPE_LEDS - 1) - (ageSec * speed);
+      const originIndex = Number.isFinite(orb.originIndex) ? orb.originIndex : (TAPE_LEDS - 1);
+      const head = originIndex - (ageSec * speed);
       if (!orb.arrivedAtTape0 && head <= 0) {
         orb.arrivedAtTape0 = true;
         tapeArrivalEvents.push({
           timeSec: nowSec,
-          color: cloneColor(orb.color),
+          color: expandTapeColorForFx(orb.color),
           source: "tape0",
         });
       }
@@ -1521,17 +1579,232 @@ import { createFramePacket } from "./serial-protocol.js";
         const d = i - head;
         if (d < 0 || d > tail) continue;
 
-        const t = 1 - d / tail;
-        if (t <= 0) continue;
+        const trail = Math.max(0.08, Math.pow(1 - d / tail, 2.1));
+        const core = d <= 1.2 ? 0.9 * (1 - d / 1.2) : 0;
 
         const p = i * 3;
-        outRGB[p + 0] = clamp255(outRGB[p + 0] + Math.round(r * t));
-        outRGB[p + 1] = clamp255(outRGB[p + 1] + Math.round(g * t));
-        outRGB[p + 2] = clamp255(outRGB[p + 2] + Math.round(b * t));
+        outRGB[p + 0] = Math.min(TAPE_OUTPUT_MAX, outRGB[p + 0] + Math.round(r * (trail + core)));
+        outRGB[p + 1] = Math.min(TAPE_OUTPUT_MAX, outRGB[p + 1] + Math.round(g * (trail + core)));
+        outRGB[p + 2] = Math.min(TAPE_OUTPUT_MAX, outRGB[p + 2] + Math.round(b * (trail + core)));
+
+        if (i > 0) {
+          const q = (i - 1) * 3;
+          outRGB[q + 0] = Math.min(TAPE_OUTPUT_MAX, outRGB[q + 0] + Math.round(r * trail * 0.14));
+          outRGB[q + 1] = Math.min(TAPE_OUTPUT_MAX, outRGB[q + 1] + Math.round(g * trail * 0.14));
+          outRGB[q + 2] = Math.min(TAPE_OUTPUT_MAX, outRGB[q + 2] + Math.round(b * trail * 0.14));
+        }
+        if (i < TAPE_LEDS - 1) {
+          const q = (i + 1) * 3;
+          outRGB[q + 0] = Math.min(TAPE_OUTPUT_MAX, outRGB[q + 0] + Math.round(r * trail * 0.14));
+          outRGB[q + 1] = Math.min(TAPE_OUTPUT_MAX, outRGB[q + 1] + Math.round(g * trail * 0.14));
+          outRGB[q + 2] = Math.min(TAPE_OUTPUT_MAX, outRGB[q + 2] + Math.round(b * trail * 0.14));
+        }
       }
     }
 
     tapeOrbState.orbs = activeOrbs.filter((orb) => (nowSec - orb.startSec) <= maxTravelSec);
+    return outRGB;
+  }
+
+  function spawnTape2Orb(side, nowSec, color) {
+    const target = side === "left" ? tape2OrbState.leftOrbs : tape2OrbState.rightOrbs;
+    target.push({
+      id: tape2OrbState.nextId++,
+      startSec: nowSec,
+      color: normalizeTapeColor(color || pickRandomPersonColor()),
+      arrivedAtTape0: false,
+    });
+  }
+
+  function scheduleNextTape2Spawn(side, nowSec) {
+    const minSec = Math.max(0.1, Number(TAPE2_ORB_FX.spawnMinIntervalSec) || 3);
+    const maxSec = Math.max(minSec, Number(TAPE2_ORB_FX.spawnMaxIntervalSec) || 7);
+    const minGap = Math.max(0, Number(TAPE2_ORB_FX.minGapBetweenSidesSec) || 0);
+    const otherTime = side === "left" ? tape2OrbState.nextRightSpawnSec : tape2OrbState.nextLeftSpawnSec;
+    let nextTime = 0;
+
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const candidate = nowSec + minSec + Math.random() * (maxSec - minSec);
+      if (!(otherTime > 0) || Math.abs(candidate - otherTime) >= minGap) {
+        nextTime = candidate;
+        break;
+      }
+    }
+
+    if (!(nextTime > 0)) {
+      const base = nowSec + minSec + Math.random() * (maxSec - minSec);
+      if (otherTime > 0 && Math.abs(base - otherTime) < minGap) {
+        nextTime = otherTime + minGap;
+      } else {
+        nextTime = base;
+      }
+    }
+
+    if (side === "left") {
+      tape2OrbState.nextLeftSpawnSec = nextTime;
+    } else {
+      tape2OrbState.nextRightSpawnSec = nextTime;
+    }
+  }
+
+  function addOrbSegment(outRGB, index, orbColor, strength) {
+    if (index < 0) return;
+    const p = index * 3;
+    outRGB[p + 0] = Math.min(TAPE_OUTPUT_MAX, outRGB[p + 0] + Math.round(orbColor.r * strength));
+    outRGB[p + 1] = Math.min(TAPE_OUTPUT_MAX, outRGB[p + 1] + Math.round(orbColor.g * strength));
+    outRGB[p + 2] = Math.min(TAPE_OUTPUT_MAX, outRGB[p + 2] + Math.round(orbColor.b * strength));
+  }
+
+  function renderOrbTrail(outRGB, head, tail, orbColor, ledCount, opts = {}) {
+    const trailFloor = Number.isFinite(opts.trailFloor) ? opts.trailFloor : 0.08;
+    const trailPower = Number.isFinite(opts.trailPower) ? opts.trailPower : 2.1;
+    const coreBoost = Number.isFinite(opts.coreBoost) ? opts.coreBoost : 0.9;
+    const coreWidth = Number.isFinite(opts.coreWidth) ? opts.coreWidth : 1.2;
+    const neighborGlow = Number.isFinite(opts.neighborGlow) ? opts.neighborGlow : 0.14;
+    const minIndex = Number.isFinite(opts.minIndex) ? opts.minIndex : 0;
+    const maxIndex = Number.isFinite(opts.maxIndex) ? opts.maxIndex : (ledCount - 1);
+
+    const start = Math.max(minIndex, Math.floor(head));
+    const end = Math.min(maxIndex, Math.ceil(head + tail));
+    for (let i = start; i <= end; i += 1) {
+      const d = i - head;
+      if (d < 0 || d > tail) continue;
+      const trail = Math.max(trailFloor, Math.pow(1 - d / tail, trailPower));
+      const core = d <= coreWidth ? coreBoost * (1 - d / coreWidth) : 0;
+      addOrbSegment(outRGB, i, orbColor, trail + core);
+      if (neighborGlow > 0) {
+        if (i > 0) addOrbSegment(outRGB, i - 1, orbColor, trail * neighborGlow);
+        if (i < ledCount - 1) addOrbSegment(outRGB, i + 1, orbColor, trail * neighborGlow);
+      }
+    }
+  }
+
+  function renderReverseOrbTrail(outRGB, head, tail, orbColor, ledCount, opts = {}) {
+    const trailFloor = Number.isFinite(opts.trailFloor) ? opts.trailFloor : 0.08;
+    const trailPower = Number.isFinite(opts.trailPower) ? opts.trailPower : 2.1;
+    const coreBoost = Number.isFinite(opts.coreBoost) ? opts.coreBoost : 0.9;
+    const coreWidth = Number.isFinite(opts.coreWidth) ? opts.coreWidth : 1.2;
+    const neighborGlow = Number.isFinite(opts.neighborGlow) ? opts.neighborGlow : 0.14;
+    const minIndex = Number.isFinite(opts.minIndex) ? opts.minIndex : 0;
+    const maxIndex = Number.isFinite(opts.maxIndex) ? opts.maxIndex : (ledCount - 1);
+
+    const start = Math.max(minIndex, Math.floor(head - tail));
+    const end = Math.min(maxIndex, Math.ceil(head));
+    for (let i = start; i <= end; i += 1) {
+      const d = head - i;
+      if (d < 0 || d > tail) continue;
+      const trail = Math.max(trailFloor, Math.pow(1 - d / tail, trailPower));
+      const core = d <= coreWidth ? coreBoost * (1 - d / coreWidth) : 0;
+      addOrbSegment(outRGB, i, orbColor, trail + core);
+      if (neighborGlow > 0) {
+        if (i > 0) addOrbSegment(outRGB, i - 1, orbColor, trail * neighborGlow);
+        if (i < ledCount - 1) addOrbSegment(outRGB, i + 1, orbColor, trail * neighborGlow);
+      }
+    }
+  }
+
+  function renderTape2Frame(nowSec, outRGB, tape1RGB) {
+    outRGB.fill(0);
+
+    if (tape2OrbState.nextLeftSpawnSec <= 0) {
+      scheduleNextTape2Spawn("left", nowSec);
+    }
+    if (tape2OrbState.nextRightSpawnSec <= 0) {
+      scheduleNextTape2Spawn("right", nowSec);
+    }
+
+    if (nowSec >= tape2OrbState.nextLeftSpawnSec) {
+      spawnTape2Orb("left", nowSec, pickRandomPersonColor());
+      scheduleNextTape2Spawn("left", nowSec);
+    }
+
+    if (nowSec >= tape2OrbState.nextRightSpawnSec) {
+      spawnTape2Orb("right", nowSec, pickRandomPersonColor());
+      scheduleNextTape2Spawn("right", nowSec);
+    }
+
+    const { speed, tail } = TAPE2_ORB_FX;
+    const leftActive = [];
+    const rightActive = [];
+
+    for (const orb of tape2OrbState.leftOrbs) {
+      const ageSec = nowSec - orb.startSec;
+      if (ageSec < 0) continue;
+      const head = TAPE2_CENTER_INDEX - ageSec * speed;
+      const overshoot = Math.max(0, -head);
+      const tape1Head = VIRTUAL_TAPE2_JOIN_A - overshoot;
+      const tape1Tail = Math.min(tail, overshoot);
+
+      if (!orb.arrivedAtTape0 && overshoot >= VIRTUAL_TAPE2_JOIN_A) {
+        orb.arrivedAtTape0 = true;
+        tapeArrivalEvents.push({
+          timeSec: nowSec,
+          color: expandTapeColorForFx(orb.color),
+          source: "tape2-left",
+        });
+      }
+      if (head + tail < 0 && tape1Head + tape1Tail < 0) continue;
+
+      leftActive.push(orb);
+      renderOrbTrail(outRGB, head, tail, orb.color, TAPE2_LEDS, {
+        trailFloor: TAPE2_ORB_FX.glowFloor,
+        trailPower: 2.2,
+        coreBoost: TAPE2_ORB_FX.coreBoost,
+        coreWidth: 1.1,
+        neighborGlow: 0.18,
+        maxIndex: TAPE2_CENTER_INDEX,
+      });
+      if (tape1RGB && tape1Tail > 0 && tape1Head + tape1Tail >= 0 && tape1Head <= VIRTUAL_TAPE2_JOIN_A) {
+        renderOrbTrail(tape1RGB, tape1Head, tape1Tail, orb.color, TAPE_LEDS, {
+          trailFloor: 0.08,
+          trailPower: 2.1,
+          coreBoost: 0.9,
+          coreWidth: 1.2,
+          neighborGlow: 0.14,
+        });
+      }
+    }
+
+    for (const orb of tape2OrbState.rightOrbs) {
+      const ageSec = nowSec - orb.startSec;
+      if (ageSec < 0) continue;
+      const head = TAPE2_CENTER_INDEX + ageSec * speed;
+      const overshoot = Math.max(0, head - (TAPE2_LEDS - 1));
+      const tape1Head = VIRTUAL_TAPE2_JOIN_B - overshoot;
+      const tape1Tail = Math.min(tail, overshoot);
+
+      if (!orb.arrivedAtTape0 && overshoot >= VIRTUAL_TAPE2_JOIN_B) {
+        orb.arrivedAtTape0 = true;
+        tapeArrivalEvents.push({
+          timeSec: nowSec,
+          color: expandTapeColorForFx(orb.color),
+          source: "tape2-right",
+        });
+      }
+      if (head - tail > (TAPE2_LEDS - 1) && tape1Head + tape1Tail < 0) continue;
+
+      rightActive.push(orb);
+      renderReverseOrbTrail(outRGB, head, tail, orb.color, TAPE2_LEDS, {
+        trailFloor: TAPE2_ORB_FX.glowFloor,
+        trailPower: 2.2,
+        coreBoost: TAPE2_ORB_FX.coreBoost,
+        coreWidth: 1.1,
+        neighborGlow: 0.18,
+        minIndex: TAPE2_CENTER_INDEX,
+      });
+      if (tape1RGB && tape1Tail > 0 && tape1Head + tape1Tail >= 0 && tape1Head <= VIRTUAL_TAPE2_JOIN_B) {
+        renderOrbTrail(tape1RGB, tape1Head, tape1Tail, orb.color, TAPE_LEDS, {
+          trailFloor: 0.08,
+          trailPower: 2.1,
+          coreBoost: 0.9,
+          coreWidth: 1.2,
+          neighborGlow: 0.14,
+        });
+      }
+    }
+
+    tape2OrbState.leftOrbs = leftActive;
+    tape2OrbState.rightOrbs = rightActive;
     return outRGB;
   }
 
@@ -1565,6 +1838,32 @@ import { createFramePacket } from "./serial-protocol.js";
     ctx.fillStyle = "rgba(233,239,250,.72)";
     ctx.font = "12px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
     ctx.fillText(`tape ${TAPE_LEDS} leds / pin ${TAPE_PIN}`, a.sx, a.sy - 12);
+
+    const branchStart = mmToScreen(tape2WorldX[0], tape2WorldY[0]);
+    const branchEnd = mmToScreen(
+      tape2WorldX[TAPE2_LEDS - 1],
+      tape2WorldY[TAPE2_LEDS - 1],
+    );
+
+    ctx.globalAlpha = 0.72;
+    ctx.strokeStyle = "rgba(125,211,252,0.42)";
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(branchStart.sx, branchStart.sy);
+    for (let i = 1; i < TAPE2_LEDS; i += 1) {
+      const p = mmToScreen(tape2WorldX[i], tape2WorldY[i]);
+      ctx.lineTo(p.sx, p.sy);
+    }
+    ctx.stroke();
+
+    ctx.fillStyle = "rgba(125,211,252,0.92)";
+    ctx.font = "11px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
+    ctx.fillText(`tape2[0] -> tape1[${VIRTUAL_TAPE2_JOIN_A}]`, branchStart.sx + 10, branchStart.sy + 18);
+    ctx.fillText(
+      `tape2[${TAPE2_LEDS - 1}] -> tape1[${VIRTUAL_TAPE2_JOIN_B}]`,
+      branchEnd.sx + 10,
+      branchEnd.sy - 10,
+    );
     ctx.restore();
   }
 
@@ -1601,11 +1900,13 @@ import { createFramePacket } from "./serial-protocol.js";
 
   function drawLEDs(rgb) {
     const boardRGB = rgb.subarray(0, BOARD_TOTAL * 3);
-    const tapeRGB = rgb.subarray(BOARD_TOTAL * 3);
+    const tapeRGB = rgb.subarray(BOARD_TOTAL * 3, BOARD_TOTAL * 3 + TAPE_LEDS * 3);
+    const tape2RGB = rgb.subarray(BOARD_TOTAL * 3 + TAPE_LEDS * 3);
 
     drawLEDSet(boardRGB, boardWorldX, boardWorldY, BOARD_TOTAL, boardWorldI);
     drawTapeGuide();
     drawLEDSet(tapeRGB, tapeWorldX, tapeWorldY, TAPE_LEDS, tapeWorldI);
+    drawLEDSet(tape2RGB, tape2WorldX, tape2WorldY, TAPE2_LEDS, tape2WorldI);
   }
 
   // =========================================================
@@ -1613,7 +1914,8 @@ import { createFramePacket } from "./serial-protocol.js";
   // =========================================================
   const frameBuf = new Uint8Array(FRAME_LEN);
   const boardFrameBuf = frameBuf.subarray(0, BOARD_TOTAL * 3);
-  const tapeFrameBuf = frameBuf.subarray(BOARD_TOTAL * 3);
+  const tapeFrameBuf = frameBuf.subarray(BOARD_TOTAL * 3, BOARD_TOTAL * 3 + TAPE_LEDS * 3);
+  const tape2FrameBuf = frameBuf.subarray(BOARD_TOTAL * 3 + TAPE_LEDS * 3);
   let hasPreviewFrame = false;
 
   function start() {
@@ -1672,6 +1974,7 @@ import { createFramePacket } from "./serial-protocol.js";
         tapeArrivals: frameTapeArrivals,
       });
       renderTapeFrame(tNowSec, tapeFrameBuf, boardFrameBuf);
+      renderTape2Frame(tNowSec, tape2FrameBuf, tapeFrameBuf);
       frame = frameBuf;
       hasPreviewFrame = true;
       applyOutputGain(frame);
@@ -1699,6 +2002,7 @@ import { createFramePacket } from "./serial-protocol.js";
             tapeArrivals: [],
           });
           renderTapeFrame(tNowSec, tapeFrameBuf, boardFrameBuf);
+          renderTape2Frame(tNowSec, tape2FrameBuf, tapeFrameBuf);
           hasPreviewFrame = true;
         }
         return frameBuf;
