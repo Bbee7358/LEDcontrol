@@ -25,6 +25,17 @@ function ensureWaveBuffers(state, total) {
   state.waveAdd.fill(0);
 }
 
+function ensureAmbientBuffers(state, total) {
+  if (!state.ambientMask || state.ambientMask.length !== total) {
+    state.ambientMask = new Float32Array(total);
+  }
+  if (!state.ambientAdd || state.ambientAdd.length !== total * 3) {
+    state.ambientAdd = new Float32Array(total * 3);
+  }
+  state.ambientMask.fill(0);
+  state.ambientAdd.fill(0);
+}
+
 function normalizeColor(input, fallbackHex = "#00ff88") {
   if (input && typeof input === "object") {
     return {
@@ -92,6 +103,154 @@ function randomRange(lo, hi) {
   return lo + Math.random() * (hi - lo);
 }
 
+function ensureSpawnZones(state, bounds) {
+  if (state.spawnZones && state.spawnZonesBoundsKey === `${bounds.minX}:${bounds.maxX}:${bounds.minY}:${bounds.maxY}`) {
+    return state.spawnZones;
+  }
+
+  const cols = 4;
+  const rows = 3;
+  const zones = [];
+  const width = bounds.maxX - bounds.minX;
+  const height = bounds.maxY - bounds.minY;
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      const minX = bounds.minX + (width * col) / cols;
+      const maxX = bounds.minX + (width * (col + 1)) / cols;
+      const minY = bounds.minY + (height * row) / rows;
+      const maxY = bounds.minY + (height * (row + 1)) / rows;
+      zones.push({
+        id: row * cols + col,
+        minX,
+        maxX,
+        minY,
+        maxY,
+      });
+    }
+  }
+
+  state.spawnZones = zones;
+  state.spawnZonesBoundsKey = `${bounds.minX}:${bounds.maxX}:${bounds.minY}:${bounds.maxY}`;
+  return zones;
+}
+
+function getMixedColor(state, fallbackColor) {
+  const mix = state.colorMix;
+  if (!mix || mix.total <= 0.001) {
+    return normalizeColor(fallbackColor, "#31d7ff");
+  }
+
+  const r = mix.r / mix.total;
+  const g = mix.g / mix.total;
+  const b = mix.b / mix.total;
+  const maxC = Math.max(r, g, b, 0.001);
+  return {
+    r: clamp255((r / maxC) * 255),
+    g: clamp255((g / maxC) * 255),
+    b: clamp255((b / maxC) * 255),
+  };
+}
+
+function ensureColorHistory(state) {
+  if (!Array.isArray(state.colorHistory)) {
+    state.colorHistory = [];
+  }
+  return state.colorHistory;
+}
+
+function pickHistoryColor(state, fallbackColor) {
+  const history = ensureColorHistory(state).filter((entry) => entry.weight > 0.01);
+  if (history.length === 0) {
+    return getMixedColor(state, fallbackColor);
+  }
+
+  const total = history.reduce((sum, entry) => sum + entry.weight, 0);
+  let target = Math.random() * total;
+  for (const entry of history) {
+    target -= entry.weight;
+    if (target <= 0) {
+      return normalizeColor(entry.color, fallbackColor);
+    }
+  }
+  return normalizeColor(history[history.length - 1].color, fallbackColor);
+}
+
+function blendColor(a, b, t) {
+  const k = clamp(t, 0, 1);
+  return {
+    r: clamp255(a.r * (1 - k) + b.r * k),
+    g: clamp255(a.g * (1 - k) + b.g * k),
+    b: clamp255(a.b * (1 - k) + b.b * k),
+  };
+}
+
+function noteArrivalColor(state, color) {
+  const c = normalizeColor(color, "#31d7ff");
+  if (!state.colorMix) {
+    state.colorMix = { r: 0, g: 0, b: 0, total: 0 };
+  }
+  state.colorMix.r += c.r / 255;
+  state.colorMix.g += c.g / 255;
+  state.colorMix.b += c.b / 255;
+  state.colorMix.total += 1;
+
+  const history = ensureColorHistory(state);
+  history.push({
+    color: c,
+    weight: 1,
+  });
+  if (history.length > 24) {
+    history.splice(0, history.length - 24);
+  }
+}
+
+function decayArrivalColorMix(state, dt) {
+  if (!state.colorMix || state.colorMix.total <= 0.001) return;
+  const keep = Math.exp(-dt / 30);
+  state.colorMix.r *= keep;
+  state.colorMix.g *= keep;
+  state.colorMix.b *= keep;
+  state.colorMix.total *= keep;
+
+  const history = ensureColorHistory(state);
+  for (const entry of history) {
+    entry.weight *= keep;
+  }
+  state.colorHistory = history.filter((entry) => entry.weight > 0.02);
+}
+
+function pickSpawnZone(state, bounds) {
+  const zones = ensureSpawnZones(state, bounds);
+  if (!state.zoneSpawnCounts || state.zoneSpawnCounts.length !== zones.length) {
+    state.zoneSpawnCounts = new Float32Array(zones.length);
+  }
+
+  const activeCounts = new Float32Array(zones.length);
+  for (const orb of state.orbs || []) {
+    if (orb.state !== "dormant" && Number.isInteger(orb.zoneId) && orb.zoneId >= 0 && orb.zoneId < zones.length) {
+      activeCounts[orb.zoneId] += 1;
+    }
+  }
+
+  let bestScore = Infinity;
+  const candidates = [];
+  for (const zone of zones) {
+    const spawnHistory = state.zoneSpawnCounts[zone.id] || 0;
+    const score = activeCounts[zone.id] * 3 + spawnHistory;
+    if (score < bestScore - 0.001) {
+      bestScore = score;
+      candidates.length = 0;
+      candidates.push(zone);
+    } else if (Math.abs(score - bestScore) < 0.001) {
+      candidates.push(zone);
+    }
+  }
+
+  const zone = candidates[(Math.random() * candidates.length) | 0] || zones[0];
+  state.zoneSpawnCounts[zone.id] += 1;
+  return zone;
+}
+
 function chooseBehavior() {
   const roll = Math.random();
   if (roll < 0.22) return "linger";
@@ -104,8 +263,16 @@ function respawnOrb(orb, bounds, params, sourceX = null, sourceY = null, color =
   const speedMax = Number(params.speedMax) || 210;
   const angle = Math.random() * Math.PI * 2;
   const speed = randomRange(speedMin, speedMax);
-  orb.x = Number.isFinite(sourceX) ? sourceX : randomRange(bounds.minX, bounds.maxX);
-  orb.y = Number.isFinite(sourceY) ? sourceY : randomRange(bounds.minY, bounds.maxY);
+  if (Number.isFinite(sourceX) && Number.isFinite(sourceY)) {
+    orb.x = sourceX;
+    orb.y = sourceY;
+    orb.zoneId = -1;
+  } else {
+    const zone = pickSpawnZone(params.__stateRef, bounds);
+    orb.zoneId = zone.id;
+    orb.x = randomRange(zone.minX, zone.maxX);
+    orb.y = randomRange(zone.minY, zone.maxY);
+  }
   orb.vx = Math.cos(angle) * speed;
   orb.vy = Math.sin(angle) * speed;
   orb.life = 0;
@@ -120,7 +287,7 @@ function respawnOrb(orb, bounds, params, sourceX = null, sourceY = null, color =
   orb.orbitRadius = randomRange(40, 180);
   orb.orbitSpeed = randomRange(0.18, 0.65);
   orb.dormantFor = 0;
-  orb.color = color || orb.color || normalizeColor(params.defaultColor, "#31d7ff");
+  orb.color = color || orb.color || pickHistoryColor(params.__stateRef, params.defaultColor || "#31d7ff");
   orb.respawns = (orb.respawns || 0) + 1;
 }
 
@@ -158,11 +325,33 @@ function spawnBurst(state, params, bounds, sourceX, sourceY, color, count) {
     respawnOrb(
       orb,
       bounds,
-      params,
+      { ...params, __stateRef: state },
       sourceX + randomRange(-28, 28),
       sourceY + randomRange(-28, 28),
       color,
     );
+    orb.respawns = 0;
+    state.orbs.push(orb);
+  }
+}
+
+function spawnDistributedBurst(state, params, bounds, color, count) {
+  const total = Math.max(1, count | 0);
+  for (let i = 0; i < total; i++) {
+    const orb = {
+      x: 0,
+      y: 0,
+      vx: 0,
+      vy: 0,
+      life: 0,
+      ttl: 0,
+      radius: 0,
+      gain: 1,
+      seed: Math.random() * Math.PI * 2,
+      color,
+      respawns: -1,
+    };
+    respawnOrb(orb, bounds, { ...params, __stateRef: state }, null, null, color);
     orb.respawns = 0;
     state.orbs.push(orb);
   }
@@ -256,34 +445,123 @@ function renderArrivalRipple(out, geo, params, ctx, state) {
   state.pulses = active.slice(-12);
 }
 
+function renderAmbientFieldTint(out, geo, params, ctx, state) {
+  const arrivals = Array.isArray(ctx.tapeArrivals) ? ctx.tapeArrivals : [];
+  for (const arrival of arrivals) {
+    state.ambientPulses.push({
+      startSec: Number(arrival?.timeSec) || Number(ctx.t) || 0,
+      color: normalizeColor(arrival?.color, params.defaultColor || "#31d7ff"),
+    });
+  }
+
+  if (!state.ambientPulses || state.ambientPulses.length === 0) {
+    return;
+  }
+
+  const sourceX = Number.isFinite(ctx.sharedEntryX) ? ctx.sharedEntryX : Number(ctx.originX) || 0;
+  const sourceY = Number.isFinite(ctx.sharedEntryY) ? ctx.sharedEntryY : Number(ctx.originY) || 0;
+  const bounds = ensureBounds(state, geo);
+  const farDx = Math.max(Math.abs(bounds.minX - sourceX), Math.abs(bounds.maxX - sourceX));
+  const farDy = Math.max(Math.abs(bounds.minY - sourceY), Math.abs(bounds.maxY - sourceY));
+  const maxDist = Math.max(1, Math.hypot(farDx, farDy));
+  const spreadSpeed = Math.max(40, Number(params.ambientSpreadSpeed) || 260);
+  const bandWidth = Math.max(60, Number(params.ambientBandWidth) || 340);
+  const decaySec = Math.max(0.4, Number(params.ambientDecaySec) || 5.8);
+  const gain = clamp(Number(params.ambientGain) || 0.12, 0, 1.2);
+  const baseCut = clamp(Number(params.ambientBaseCut) || 0.08, 0, 1);
+
+  ensureAmbientBuffers(state, geo.TOTAL);
+  const ambientMask = state.ambientMask;
+  const ambientAdd = state.ambientAdd;
+  const active = [];
+
+  for (const pulse of state.ambientPulses) {
+    const ageSec = Number(ctx.t) - pulse.startSec;
+    if (ageSec < 0) continue;
+
+    const fade = Math.exp(-ageSec / decaySec);
+    if (fade > 0.01) {
+      active.push(pulse);
+    }
+
+    const front = Math.min(maxDist + bandWidth * 1.4, ageSec * spreadSpeed);
+    const color = normalizeColor(pulse.color, params.defaultColor || "#31d7ff");
+
+    for (let i = 0; i < geo.TOTAL; i++) {
+      const dx = geo.worldX[i] - sourceX;
+      const dy = geo.worldY[i] - sourceY;
+      const dist = Math.hypot(dx, dy);
+      const reach = clamp((front - dist) / bandWidth, 0, 1);
+      if (reach <= 0.001) continue;
+
+      const softness = 1 - Math.exp(-reach * 2.8);
+      const tint = softness * fade * gain;
+      if (tint <= 0.001) continue;
+
+      const o = i * 3;
+      if (tint > ambientMask[i]) ambientMask[i] = tint;
+      ambientAdd[o + 0] += color.r * tint;
+      ambientAdd[o + 1] += color.g * tint;
+      ambientAdd[o + 2] += color.b * tint;
+    }
+  }
+
+  for (let i = 0; i < geo.TOTAL; i++) {
+    const mask = ambientMask[i];
+    if (mask <= 0.001) continue;
+
+    const keep = Math.max(0, 1 - mask * baseCut);
+    const o = i * 3;
+    out[o + 0] = clamp255(out[o + 0] * keep);
+    out[o + 1] = clamp255(out[o + 1] * keep);
+    out[o + 2] = clamp255(out[o + 2] * keep);
+    addColor(out, o, ambientAdd[o + 0], ambientAdd[o + 1], ambientAdd[o + 2]);
+  }
+
+  state.ambientPulses = active.slice(-10);
+}
+
 function updateOrbs(state, ctx, params, geo) {
   const bounds = ensureBounds(state, geo);
   const arrivals = Array.isArray(ctx.tapeArrivals) ? ctx.tapeArrivals : [];
   const sourceX = Number.isFinite(ctx.sharedEntryX) ? ctx.sharedEntryX : (bounds.minX + bounds.maxX) * 0.5;
   const sourceY = Number.isFinite(ctx.sharedEntryY) ? ctx.sharedEntryY : bounds.minY;
+  const paramsWithState = { ...params, __stateRef: state };
+  const dt = Math.max(1 / 120, Number(ctx.dt) || 1 / 60);
+
+  decayArrivalColorMix(state, dt);
 
   for (const arrival of arrivals) {
     const color = normalizeColor(arrival?.color, params.defaultColor || "#31d7ff");
+    noteArrivalColor(state, color);
     spawnBurst(state, params, bounds, sourceX, sourceY, color, Number(params.spawnCount) || 8);
+    spawnDistributedBurst(
+      state,
+      params,
+      bounds,
+      pickHistoryColor(state, color),
+      Math.max(2, Math.round((Number(params.spawnCount) || 8) * 0.35)),
+    );
   }
 
-  const dt = Math.max(1 / 120, Number(ctx.dt) || 1 / 60);
   const wander = Number(params.wanderStrength) || 46;
   const maxLight = clamp(Number(params.maxLight) || 18, 12, 20);
   const maxRespawns = Math.max(1, Math.round(Number(params.maxRespawns) || 6));
   const maxOrbs = Math.max(4, Math.round(Number(params.maxOrbs) || 42));
+  const mixedColor = getMixedColor(state, params.defaultColor || "#31d7ff");
   trimOrbsSoftly(state, maxOrbs);
 
   for (const orb of state.orbs) {
     if (orb.state === "dormant") {
       orb.dormantFor -= dt;
       if (orb.dormantFor <= 0) {
-        respawnOrb(orb, bounds, params, null, null, orb.color);
+        respawnOrb(orb, bounds, paramsWithState, null, null, pickHistoryColor(state, mixedColor));
       }
       continue;
     }
 
     orb.life += dt;
+    orb.color = blendColor(orb.color || mixedColor, pickHistoryColor(state, mixedColor), 0.004);
 
     const swayX = Math.sin(ctx.t * (0.6 + orb.gain * 0.4) + orb.seed * 1.7) * wander;
     const swayY = Math.cos(ctx.t * (0.95 + orb.gain * 0.35) + orb.seed * 0.9) * wander;
@@ -353,7 +631,7 @@ function updateOrbs(state, ctx, params, geo) {
         orb.dormantFor = randomRange(2.2, 6.5);
         orb.life = 0;
       } else {
-        respawnOrb(orb, bounds, params, null, null, orb.color);
+        respawnOrb(orb, bounds, paramsWithState, null, null, pickHistoryColor(state, mixedColor));
       }
     }
 
@@ -431,6 +709,11 @@ export default {
     { key: "waveTailGlow", label: "Wave Tail Glow", type: "range", min: 0, max: 120, step: 1, default: 22 },
     { key: "waveBaseCut", label: "Wave Base Cut", type: "range", min: 0, max: 1, step: 0.01, default: 0.88 },
     { key: "waveBaseFloor", label: "Wave Base Floor", type: "range", min: 0, max: 1, step: 0.01, default: 0.12 },
+    { key: "ambientSpreadSpeed", label: "Ambient Spread", type: "range", min: 40, max: 800, step: 10, default: 260 },
+    { key: "ambientBandWidth", label: "Ambient Width", type: "range", min: 60, max: 900, step: 10, default: 340 },
+    { key: "ambientDecaySec", label: "Ambient Decay", type: "range", min: 0.5, max: 12, step: 0.1, default: 5.8 },
+    { key: "ambientGain", label: "Ambient Gain", type: "range", min: 0, max: 1.2, step: 0.02, default: 0.12 },
+    { key: "ambientBaseCut", label: "Ambient Base Cut", type: "range", min: 0, max: 1, step: 0.01, default: 0.08 },
     { key: "maxLight", label: "Max Light", type: "range", min: 20, max: 20, step: 1, default: 20 },
   ],
 
@@ -438,8 +721,16 @@ export default {
     state.orbs = [];
     state.pulses = [];
     state.bounds = null;
+    state.spawnZones = null;
+    state.spawnZonesBoundsKey = "";
+    state.zoneSpawnCounts = null;
     state.waveMask = null;
     state.waveAdd = null;
+    state.ambientPulses = [];
+    state.ambientMask = null;
+    state.ambientAdd = null;
+    state.colorMix = { r: 0, g: 0, b: 0, total: 0 };
+    state.colorHistory = [];
     state.logged = false;
   },
 
@@ -453,6 +744,7 @@ export default {
 
     renderBase(out, geo, params);
     renderArrivalRipple(out, geo, params, ctx, state);
+    renderAmbientFieldTint(out, geo, params, ctx, state);
     updateOrbs(state, ctx, params, geo);
     renderOrbs(out, geo, params, state, ctx);
   },

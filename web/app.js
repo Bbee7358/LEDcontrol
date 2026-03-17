@@ -471,6 +471,7 @@ import { createFramePacket } from "./serial-protocol.js";
     coreBoost: 1.35,
     glowFloor: 0.12,
   };
+  const TAPE2_SEQUENCE_URL = "/opinion_topics_20260317.json";
 
   const tapeArrivalEvents = [];
   const SHARED_TAPE_BOARD_INDEX = getTapeSharedBoardIndex();
@@ -491,6 +492,12 @@ import { createFramePacket } from "./serial-protocol.js";
   const personColorState = {
     current: null,
     lastPaletteIndex: -1,
+  };
+  const tape2SequenceState = {
+    colors: [],
+    index: 0,
+    loaded: false,
+    primedForRun: false,
   };
   const remotePeopleState = {
     people: [],
@@ -588,6 +595,7 @@ import { createFramePacket } from "./serial-protocol.js";
   }
 
   refreshPersonColor();
+  void loadTape2Sequence();
 
   function spawnTapeOrb(nowSec, color, originIndex = TAPE_LEDS - 1) {
     const c = color || getEffectPersonColor() || personColorState.current || TAPE_ORB_FX.defaultColor;
@@ -1616,6 +1624,60 @@ import { createFramePacket } from "./serial-protocol.js";
     });
   }
 
+  async function loadTape2Sequence() {
+    try {
+      const response = await fetch(TAPE2_SEQUENCE_URL, { cache: "no-store" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const payload = await response.json();
+      const colors = Array.isArray(payload?.active_burst_colors) ? payload.active_burst_colors : [];
+      tape2SequenceState.colors = colors
+        .map((hex) => hexToRgbColor(hex, TAPE_ORB_FX.defaultColor))
+        .filter((color) => color && Number.isFinite(color.r) && Number.isFinite(color.g) && Number.isFinite(color.b));
+      tape2SequenceState.index = 0;
+      tape2SequenceState.loaded = tape2SequenceState.colors.length > 0;
+      tape2SequenceState.primedForRun = false;
+      console.info("[TAPE2_SEQUENCE] loaded", tape2SequenceState.colors.length);
+      if (running) {
+        primeFieldFromTape2Sequence(performance.now() / 1000);
+      }
+    } catch (error) {
+      tape2SequenceState.colors = [];
+      tape2SequenceState.index = 0;
+      tape2SequenceState.loaded = false;
+      tape2SequenceState.primedForRun = false;
+      console.warn("[TAPE2_SEQUENCE] failed to load, fallback to random", error);
+    }
+  }
+
+  function getNextTape2SequenceColor() {
+    if (!tape2SequenceState.loaded || tape2SequenceState.colors.length <= 0) {
+      return pickRandomPersonColor();
+    }
+    const color = tape2SequenceState.colors[tape2SequenceState.index % tape2SequenceState.colors.length];
+    tape2SequenceState.index = (tape2SequenceState.index + 1) % tape2SequenceState.colors.length;
+    return cloneColor(color);
+  }
+
+  function primeFieldFromTape2Sequence(nowSec) {
+    if (!tape2SequenceState.loaded || tape2SequenceState.colors.length <= 0) {
+      return;
+    }
+    if (tape2SequenceState.primedForRun) {
+      return;
+    }
+
+    const burstCount = Math.min(tape2SequenceState.colors.length, 211);
+    for (let i = 0; i < burstCount; i += 1) {
+      const color = tape2SequenceState.colors[i];
+      tapeArrivalEvents.push({
+        timeSec: nowSec,
+        color: expandTapeColorForFx(color),
+        source: i % 2 === 0 ? "tape2-left-seed" : "tape2-right-seed",
+      });
+    }
+    tape2SequenceState.primedForRun = true;
+  }
+
   function scheduleNextTape2Spawn(side, nowSec) {
     const minSec = Math.max(0.1, Number(TAPE2_ORB_FX.spawnMinIntervalSec) || 3);
     const maxSec = Math.max(minSec, Number(TAPE2_ORB_FX.spawnMaxIntervalSec) || 7);
@@ -1714,12 +1776,12 @@ import { createFramePacket } from "./serial-protocol.js";
     }
 
     if (nowSec >= tape2OrbState.nextLeftSpawnSec) {
-      spawnTape2Orb("left", nowSec, pickRandomPersonColor());
+      spawnTape2Orb("left", nowSec, getNextTape2SequenceColor());
       scheduleNextTape2Spawn("left", nowSec);
     }
 
     if (nowSec >= tape2OrbState.nextRightSpawnSec) {
-      spawnTape2Orb("right", nowSec, pickRandomPersonColor());
+      spawnTape2Orb("right", nowSec, getNextTape2SequenceColor());
       scheduleNextTape2Spawn("right", nowSec);
     }
 
@@ -1921,9 +1983,11 @@ import { createFramePacket } from "./serial-protocol.js";
   function start() {
     if (running) return;
     running = true;
+    tape2SequenceState.primedForRun = false;
     syncRunButtons();
     setStatus(currentStatusState(), currentStatusSubline());
     lastTick = 0;
+    primeFieldFromTape2Sequence(performance.now() / 1000);
   }
 
   function stop() {
